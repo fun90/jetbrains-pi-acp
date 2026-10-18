@@ -756,7 +756,7 @@ test('命令发现、用量、状态、压缩、关闭和分叉', async t => {
   await c.request('session/set_mode', { sessionId: sid, modeId: 'standard' });
   const commands = c.records.find(record => record.params?.sessionId === sid &&
     record.params.update.sessionUpdate === 'available_commands_update').params.update.availableCommands;
-  assert.deepEqual(commands.map(command => command.name), ['status', 'reload', 'compact', 'goal', 'fixture']);
+  assert.deepEqual(commands.map(command => command.name), ['status', 'tree', 'reload', 'compact', 'goal', 'fixture']);
   assert.deepEqual(commands.find(command => command.name === 'compact').input,
     { type: 'unstructured', hint: msg('cmdCompactHint') });
   assert.ok(commands.filter(command => command.input).every(command => command.input.type === 'unstructured'));
@@ -1492,6 +1492,70 @@ test('新会话持久保存并可由另一个适配器发现和恢复', async t 
   assert.ok((await reopened.request('session/list', { cwd: root })).result.sessions.some(info => info.sessionId === sid));
   assert.ok((await reopened.request('session/load', { sessionId: sid, cwd: root, mcpServers: [] })).result);
   assert.ok(reopened.records.some(record => record.params?.update?.content?.text === '保存此问题'));
+});
+
+test('本机 pi /tree 切换分支、用户消息和目标，取消时保留历史', { skip: !process.env.PI_ACP_SMOKE }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'pi-acp-tree-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const c = await client(t, true, directory, ['--session-dir', directory]);
+  await session(c, [], { elicitation: { form: {} }, _meta: { jetbrains: { air: { version: 1, capabilities: [] } } } });
+  const sid = randomUUID();
+  const timestamp = new Date().toISOString();
+  const message = (id, parentId, role, text) => ({ type: 'message', id, parentId, timestamp,
+    message: { role, content: [{ type: 'text', text }], timestamp: Date.now(),
+      ...(role === 'assistant' ? { api: 'test', provider: 'test', model: 'first', stopReason: 'stop',
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } } : {}) } });
+  const goal = (id, parentId, objective) => ({ type: 'custom', customType: 'acp_goal', id, parentId, timestamp,
+    data: { objective, status: 'active' } });
+  const entries = [
+    { type: 'session', version: 3, id: sid, cwd: root, timestamp },
+    message('u1', null, 'user', '第一轮'), message('a1', 'u1', 'assistant', '第一轮回答'),
+    goal('g1', 'a1', '旧目标'), message('u2', 'g1', 'user', '第二轮'),
+    message('a2', 'u2', 'assistant', '第二轮回答'), goal('g2', 'a2', '新目标'),
+  ];
+  const path = join(directory, 'tree.jsonl');
+  await writeFile(path, entries.map(entry => JSON.stringify(entry)).join('\n') + '\n');
+  assert.ok((await c.request('session/resume', { sessionId: sid, cwd: root, mcpServers: [] })).result);
+  const choose = async (id, action = 'accept') => {
+    const start = c.records.length;
+    const pending = c.request('session/prompt', { sessionId: sid, prompt: [{ type: 'text', text: '/tree' }] });
+    const form = await c.wait(record => record.method === 'elicitation/create' && c.records.indexOf(record) >= start);
+    const options = form.params.requestedSchema.properties.value.enum;
+    const value = options.find(option => option.endsWith(`[${id}]`));
+    assert.ok(value, JSON.stringify(options));
+    assert.ok(options.some(option => option.endsWith('[g2]')));
+    if (action === 'cancel-session') await c.request('session/cancel', { sessionId: sid });
+    else c.send({ jsonrpc: '2.0', id: form.id, result: { action, content: { value } } });
+    assert.equal((await pending).result?.stopReason, action === 'cancel-session' ? 'cancelled' : 'end_turn');
+    return c.records.slice(start);
+  };
+  const replay = async () => {
+    const start = c.records.length;
+    assert.ok((await c.request('session/load', { sessionId: sid, cwd: root, mcpServers: [] })).result);
+    return c.records.slice(start).filter(record => record.params?.sessionId === sid &&
+      ['user_message_chunk', 'agent_message_chunk'].includes(record.params.update.sessionUpdate))
+      .map(record => record.params.update.content.text);
+  };
+  const switched = await choose('g1');
+  assert.ok(switched.some(record => record.params?.update?._meta?.jetbrains?.air?.goal?.objective === '旧目标'));
+  assert.deepEqual(await replay(), ['第一轮', '第一轮回答']);
+  await c.request('session/prompt', { sessionId: sid, prompt: [{ type: 'text', text: '/goal 分支目标' }] });
+  await choose('g2');
+  assert.deepEqual(await replay(), ['第一轮', '第一轮回答', '第二轮', '第二轮回答']);
+  for (const action of ['cancel', 'cancel-session']) {
+    await choose('u1', action);
+    assert.deepEqual(await replay(), ['第一轮', '第一轮回答', '第二轮', '第二轮回答']);
+  }
+  const reset = await choose('u1');
+  assert.ok(reset.some(record => record.params?.update?.content?.text?.includes(msg('treeResend'))));
+  assert.ok(reset.some(record => record.params?.update?._meta?.jetbrains?.air?.goal === null));
+  assert.deepEqual(await replay(), []);
+  await c.request('session/prompt', { sessionId: sid, prompt: [{ type: 'text', text: '/goal 根目标' }] });
+  const saved = (await readFile(path, 'utf8')).trim().split('\n').map(JSON.parse);
+  for (const entry of entries) assert.ok(saved.some(value => value.id === entry.id));
+  assert.equal(saved.at(-1).parentId, null);
+  assert.equal(saved.at(-1).data.objective, '根目标');
 });
 
 for (const real of [false, true]) {

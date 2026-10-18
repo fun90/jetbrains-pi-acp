@@ -1,14 +1,34 @@
 import { invalid, logError } from './shared.js';
 import { t } from './i18n.js';
 
-// 适配器自己实现的斜杠命令（/status、/compact、/goal），以及发布给客户端的命令列表。
+// 将会话树展平为唯一的选项；迭代遍历避免长会话耗尽调用栈。
+export function treeOptions(tree, leafId) {
+  const options = new Map();
+  const pending = [...tree].reverse().map(node => ({ node, depth: 0 }));
+  while (pending.length) {
+    const { node, depth } = pending.pop();
+    const { entry } = node;
+    const content = entry.message?.content ?? entry.summary ?? entry.content;
+    const text = typeof content === 'string' ? content : (content ?? [])
+      .map(block => block.text ?? block.name ?? '').join(' ');
+    const preview = (node.label || text || entry.customType || entry.type).replace(/\s+/g, ' ').slice(0, 100);
+    const label = `${'  '.repeat(Math.min(depth, 12))}${entry.id === leafId ? '●' : '○'} ${entry.message?.role ?? entry.type}: ${preview} [${entry.id}]`;
+    options.set(label, entry);
+    for (let index = node.children.length - 1; index >= 0; index--) {
+      pending.push({ node: node.children[index], depth: depth + 1 });
+    }
+  }
+  return options;
+}
+
+// 适配器自己实现的斜杠命令，以及发布给客户端的命令列表。
 export class Commands {
   constructor(agent) {
     this.agent = agent;
   }
 
   isLocal(text) {
-    return text === '/status' || text === '/reload' || /^\/(compact|goal)(?:\s|$)/.test(text);
+    return text === '/status' || text === '/reload' || text === '/tree' || /^\/(compact|goal)(?:\s|$)/.test(text);
   }
 
   // Air 聊天框中的 /stdin、/eof 转为唯一可输入终端的输入；返回 true 表示已处理。
@@ -57,6 +77,23 @@ export class Commands {
       await this.agent.sendUsage(session, stats);
       return finish({ stopReason: 'end_turn' });
     }
+    if (text === '/tree') {
+      const command = { cancelled: false };
+      session.command = command;
+      session.changingConfig = true;
+      try {
+        await this.tree(session, command);
+        return finish({ stopReason: command.cancelled ? 'cancelled' : 'end_turn' });
+      } catch (error) {
+        command.error = error;
+        if (this.agent.airSessionFailure) return finish(this.agent.failureResult(session, error));
+        finish({});
+        throw error;
+      } finally {
+        session.command = null;
+        session.changingConfig = false;
+      }
+    }
     if (text === '/reload') {
       session.changingConfig = true;
       try {
@@ -92,11 +129,43 @@ export class Commands {
     }
   }
 
+  async tree(session, command) {
+    const show = text => this.agent.update(session, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } });
+    const { tree, leafId } = await session.pi.request('get_tree');
+    if (command.cancelled) return;
+    const options = treeOptions(tree, leafId);
+    if (!options.size) return show(t('treeEmpty'));
+    if (this.agent.clientCapabilities?.elicitation?.form == null) {
+      return show(`${t('treeUnsupported')}\n\n${[...options.keys()].join('\n')}`);
+    }
+    const result = await this.agent.interactions.request(session, 'elicitation', 'elicitation/create', {
+      sessionId: session.interactionSessionId ?? session.id, mode: 'form', message: t('treeSelect'),
+      requestedSchema: { type: 'object', properties: { value: { type: 'string', enum: [...options.keys()] } }, required: ['value'] },
+    });
+    if (session.failure) throw session.failure;
+    if (command.cancelled || result?.action !== 'accept') return;
+    const entry = options.get(result.content?.value);
+    if (!entry) throw invalid(t('treeSelectionInvalid'));
+    await session.pi.request('prompt', { message: `/__acp_tree ${JSON.stringify(entry.id)}` });
+    if (!command.treeResult) throw new Error(t('treeNavigationFailed'));
+    if (command.treeResult.cancelled) return show(t('treeCancelled'));
+    await session.pi.request('prompt', { message: '/__acp_check' });
+    this.agent.goalUpdate(session);
+    await this.agent.refreshUsage(session);
+    show(t('treeDone', { id: entry.id }));
+    if (entry.message?.role === 'user' || entry.type === 'custom_message') {
+      const content = entry.message?.content ?? entry.content;
+      const text = typeof content === 'string' ? content : (content ?? []).filter(block => block.type === 'text').map(block => block.text).join('\n');
+      if (text) show(`\n\n${t('treeResend')}\n${text}`);
+    }
+  }
+
   async publish(session) {
     const result = await session.pi.request('get_commands');
     const availableCommands = new Map([
       ['status', { name: 'status', description: t('cmdStatus'), input: null }],
       // Air 的 ACP v1 解析器需要 input 的类型判别字段。
+      ['tree', { name: 'tree', description: t('cmdTree'), input: null }],
       ['reload', { name: 'reload', description: t('cmdReload'), input: null }],
       ['compact', { name: 'compact', description: t('cmdCompact'), input: { type: 'unstructured', hint: t('cmdCompactHint') } }],
       ['goal', { name: 'goal', description: t('cmdGoal'),

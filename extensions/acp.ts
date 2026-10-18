@@ -143,6 +143,13 @@ export default function (pi: any) {
       await ctx.fork(JSON.parse(args), { position: 'at' });
     },
   });
+  pi.registerCommand('__acp_tree', {
+    description: 'Navigate the ACP session tree',
+    handler: async (args: string, ctx: any) => {
+      const result = await ctx.navigateTree(JSON.parse(args), { summarize: false });
+      ctx.ui.notify(`PI_ACP_TREE:${JSON.stringify({ cancelled: result.cancelled })}`, 'info');
+    },
+  });
   pi.registerCommand('__acp_goal', {
     description: 'Sync the ACP goal',
     handler: async (args: string) => {

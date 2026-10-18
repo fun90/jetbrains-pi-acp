@@ -17,6 +17,9 @@ const notifyHandlers = {
     if (message.role === 'assistant') session.assistantMessageId = message.id;
     if (message.role === 'user') agent.onUserMessage?.(session, message.id);
   },
+  'PI_ACP_TREE:'(agent, session, payload) {
+    if (session.command) session.command.treeResult = JSON.parse(payload);
+  },
   'PI_ACP_GOAL:'(agent, session, payload) {
     session.goal = JSON.parse(payload);
     if (session.availableModels && !session.changingConfig) agent.goalUpdate(session);

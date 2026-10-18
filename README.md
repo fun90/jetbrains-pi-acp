@@ -38,7 +38,7 @@ The IDE must be able to find `npx`; use its absolute path if needed. Menu locati
 ## Features
 
 - ACP v1 and v2 draft support, with streaming responses, reasoning, tool status, terminal output, and usage reporting.
-- Native pi session history: list, load, resume, rename, fork, and delete sessions.
+- Native pi session history: list, load, resume, rename, fork, and delete sessions. Use `/tree` to view the session tree in a selection form and switch context while preserving previous branches. Selecting a user message returns to before it was sent and shows the original text for resending (reattach any attachments). Switching does not revert files, remove existing IDE messages, or generate a branch summary. Clients without form support only display the tree.
 - Model and reasoning-level selection, plus full-access, standard, read-only, and plan modes.
 - UI text (config names, mode and command descriptions, permission options, errors) follows the system language: Chinese for `zh*` locales, English otherwise, based on the first non-empty `LC_ALL`, `LC_MESSAGES`, or `LANG`, falling back to the system locale. Tool descriptions and system prompts sent to the model are always English. Restart the adapter after changing the language.
 - File diffs for built-in `edit`/`write` tools, with optional Air Git patches and per-turn file reports. File report snapshots follow Git ignore rules, including `.gitignore`, while retaining tracked files; non-Git projects or systems without Git use filesystem scanning that skips common dependency, build, and cache directories such as `node_modules/`, `vendor/`, `target/`, `build/`, `dist/`, `coverage/`, `.cache/`, and `.venv/`, including nested directories. Snapshots always skip `.DS_Store`.
