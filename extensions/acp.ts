@@ -191,6 +191,11 @@ export default function (pi: any) {
       ctx.ui.notify('PI_ACP_READY', 'info');
     },
   });
+  pi.registerCommand('__acp_reload', {
+    description: 'Reload models.json, extensions, skills and prompts',
+    // reload 不会刷新 models.json，需先刷新模型注册表。
+    handler: async (_args: string, ctx: any) => { await ctx.modelRegistry.refresh(); await ctx.reload(); },
+  });
   pi.registerCommand('__acp_archive', {
     description: 'Sync the ACP archive state',
     handler: async (args: string) => { pi.appendEntry('acp_archive', args.trim() === 'true'); },

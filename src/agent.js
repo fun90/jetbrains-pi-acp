@@ -763,6 +763,24 @@ export class Agent {
     }
   }
 
+  // 重新加载 pi 配置后同步模型列表、命令和扩展内存状态（计划模式、目标）。
+  async reloadSession(session) {
+    await session.pi.request('prompt', { message: '/__acp_reload' });
+    if (session.mode === 'plan') await session.pi.request('prompt', { message: '/__acp_mode plan' });
+    await session.pi.request('prompt', { message: '/__acp_check' });
+    const state = await session.pi.request('get_state');
+    const available = await session.pi.request('get_available_models');
+    session.availableModels = available?.models ?? [];
+    const current = state?.model;
+    if (current && !session.availableModels.some(model => modelKey(model) === modelKey(current))) {
+      session.availableModels.push(current);
+    }
+    if (current) session.currentModelId = modelKey(current);
+    await this.refreshThinking(session);
+    this.update(session, { sessionUpdate: 'config_option_update', configOptions: this.modelConfig(session) });
+    await this.commands.publish(session);
+  }
+
   async refreshThinking(session) {
     const [state, available] = await Promise.all([
       session.pi.request('get_state'), session.pi.request('get_available_thinking_levels'),

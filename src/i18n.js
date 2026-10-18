@@ -142,6 +142,8 @@ const zh = {
 
   // 斜杠命令
   cmdStatus: '显示当前模型、token、成本和上下文使用情况',
+  cmdReload: '重新加载 pi 的模型、扩展、skills 和提示词配置',
+  reloadDone: '已重新加载 pi 配置',
   cmdCompact: '压缩对话上下文，可附带摘要要求',
   cmdCompactHint: '可选摘要要求',
   cmdGoal: '设置或查看长期目标，也支持 pause、resume、clear',
@@ -342,6 +344,8 @@ const en = {
   promptContentUnsupported: 'Unsupported prompt content: {type}',
 
   cmdStatus: 'Show the current model, tokens, cost, and context usage',
+  cmdReload: 'Reload pi models, extensions, skills and prompts',
+  reloadDone: 'pi configuration reloaded',
   cmdCompact: 'Compact the conversation context, optionally with summary instructions',
   cmdCompactHint: 'Optional summary instructions',
   cmdGoal: 'Set or view the goal; also supports pause, resume, and clear',

@@ -8,7 +8,7 @@ export class Commands {
   }
 
   isLocal(text) {
-    return text === '/status' || /^\/(compact|goal)(?:\s|$)/.test(text);
+    return text === '/status' || text === '/reload' || /^\/(compact|goal)(?:\s|$)/.test(text);
   }
 
   // Air 聊天框中的 /stdin、/eof 转为唯一可输入终端的输入；返回 true 表示已处理。
@@ -57,6 +57,16 @@ export class Commands {
       await this.agent.sendUsage(session, stats);
       return finish({ stopReason: 'end_turn' });
     }
+    if (text === '/reload') {
+      session.changingConfig = true;
+      try {
+        await this.agent.reloadSession(session);
+        this.agent.update(session, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: t('reloadDone') } });
+        return finish({ stopReason: 'end_turn' });
+      } finally {
+        session.changingConfig = false;
+      }
+    }
     const customInstructions = text.slice('/compact'.length).trim() || undefined;
     const command = { cancelled: false };
     session.command = command;
@@ -87,6 +97,7 @@ export class Commands {
     const availableCommands = new Map([
       ['status', { name: 'status', description: t('cmdStatus'), input: null }],
       // Air 的 ACP v1 解析器需要 input 的类型判别字段。
+      ['reload', { name: 'reload', description: t('cmdReload'), input: null }],
       ['compact', { name: 'compact', description: t('cmdCompact'), input: { type: 'unstructured', hint: t('cmdCompactHint') } }],
       ['goal', { name: 'goal', description: t('cmdGoal'),
         input: { type: 'unstructured', hint: t('cmdGoalHint') } }],

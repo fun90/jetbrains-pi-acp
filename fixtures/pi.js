@@ -163,6 +163,9 @@ readJsonl(process.stdin, request => {
       data: JSON.parse(request.message.slice('/__acp_goal '.length)) });
     persist();
     response({ disposition: 'handled' });
+  } else if (request.type === 'prompt' && request.message === '/__acp_reload') {
+    models.push({ provider: 'test', id: 'reloaded', name: '重载后的模型' });
+    response({ disposition: 'handled' });
   } else if (request.type === 'prompt' && request.message.startsWith('/__acp_mode ')) {
     response({ disposition: 'handled' });
   } else if (request.type === 'prompt' && request.message.startsWith('/name ')) {

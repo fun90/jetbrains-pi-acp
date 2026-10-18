@@ -11,7 +11,7 @@
 1. 在终端中登录模型提供商：
 
    ```bash
-   npx --yes jetbrains-pi-acp@0.1.5 --setup
+   npx --yes jetbrains-pi-acp@0.1.6 --setup
    ```
 
    在 pi 中运行 `/login`，完成登录后退出 pi 并返回 IDE。凭据由 pi 管理。
@@ -23,7 +23,7 @@
      "agent_servers": {
        "pi": {
          "command": "npx",
-         "args": ["--yes", "jetbrains-pi-acp@0.1.5"],
+         "args": ["--yes", "jetbrains-pi-acp@0.1.6"],
          "use_idea_mcp": true,
          "use_custom_mcp": true
        }
@@ -53,7 +53,7 @@ IDE 必须能找到 `npx`，必要时使用其绝对路径。菜单位置随 IDE
 在 Agent 的 `args` 末尾添加 `--`，随后传递 pi 参数，例如：
 
 ```json
-["--yes", "jetbrains-pi-acp@0.1.5", "--", "--model", "provider/model-id", "--thinking", "medium"]
+["--yes", "jetbrains-pi-acp@0.1.6", "--", "--model", "provider/model-id", "--thinking", "medium"]
 ```
 
 这里只传配置选项，不传初始提示、交互模式或会话选择参数。RPC 模式和会话由适配器管理。
@@ -61,6 +61,8 @@ IDE 必须能找到 `npx`，必要时使用其绝对路径。菜单位置随 IDE
 使用外部 pi 时，在 `--` 前添加 `--pi-command /绝对路径/pi`，或设置 `PI_ACP_PI_COMMAND`。其他 pi 版本需要自行验证兼容性。
 
 历史使用 pi 原生存储，通常位于 `~/.pi/agent/sessions/`，同时遵循 pi 的会话目录设置。列表按项目工作目录过滤。避免多个适配器，或终端 pi 与 IDE，同时操作同一会话。
+
+历史会话在 ACP 重启后首次打开时读取当前 pi 配置，可使用新增的模型、扩展、skills 和提示词。已打开的会话可发送 `/reload`，刷新配置及 IDE 中的模型、命令列表。历史会话会保留上次选择的模型和推理级别；修改 `settings.json` 的默认模型不会自动切换历史会话，请在 IDE 模型菜单中选择新模型。自定义模型通常配置在 `~/.pi/agent/models.json`；设置了 `PI_CODING_AGENT_DIR` 时，以该目录为准，新增模型的认证也必须对 IDE 启动的 pi 可用。
 
 更新适配器或调整启动参数后，需要重启 Agent 连接。
 

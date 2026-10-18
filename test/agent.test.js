@@ -16,11 +16,11 @@ import { convertMcp, convertPrompt } from '../src/convert.js';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const fixture = fileURLToPath(new URL('../fixtures/pi.js', import.meta.url));
 
-async function client(t, real = false, savedDirectory, extraArgs = []) {
+async function client(t, real = false, savedDirectory, extraArgs = [], env = {}) {
   const directory = savedDirectory ?? await mkdtemp(join(tmpdir(), 'pi-acp-test-'));
   const child = spawn(process.execPath, ['src/index.js', '--pi-command', real ? (process.env.PI_ACP_PI_COMMAND || 'pi') : process.execPath,
     '--', ...(real ? ['--offline', '--no-extensions', '--no-skills', '--no-context-files', '--no-mcp'] : [fixture]), ...extraArgs],
-  { cwd: root, env: { ...process.env, PI_CODING_AGENT_SESSION_DIR: directory }, stdio: ['pipe', 'pipe', 'pipe'] });
+  { cwd: root, env: { ...process.env, ...env, PI_CODING_AGENT_SESSION_DIR: directory }, stdio: ['pipe', 'pipe', 'pipe'] });
   let stderr = '';
   child.stderr.on('data', data => { stderr += data; });
   const records = [];
@@ -756,7 +756,7 @@ test('命令发现、用量、状态、压缩、关闭和分叉', async t => {
   await c.request('session/set_mode', { sessionId: sid, modeId: 'standard' });
   const commands = c.records.find(record => record.params?.sessionId === sid &&
     record.params.update.sessionUpdate === 'available_commands_update').params.update.availableCommands;
-  assert.deepEqual(commands.map(command => command.name), ['status', 'compact', 'goal', 'fixture']);
+  assert.deepEqual(commands.map(command => command.name), ['status', 'reload', 'compact', 'goal', 'fixture']);
   assert.deepEqual(commands.find(command => command.name === 'compact').input,
     { type: 'unstructured', hint: msg('cmdCompactHint') });
   assert.ok(commands.filter(command => command.input).every(command => command.input.type === 'unstructured'));
@@ -768,6 +768,10 @@ test('命令发现、用量、状态、压缩、关闭和分叉', async t => {
     prompt: [{ type: 'text', text: '/status' }] })).result.stopReason, 'end_turn');
   assert.ok(c.records.findLast(record => record.params?.update?.sessionUpdate === 'agent_message_chunk')
     .params.update.content.text.endsWith(msg('statusContext', { tokens: 123, window: 1000, percent: ' (12.3%)' })));
+  assert.equal((await c.request('session/prompt', { sessionId: sid,
+    prompt: [{ type: 'text', text: '/reload' }] })).result.stopReason, 'end_turn');
+  assert.ok(c.records.findLast(record => record.params?.update?.sessionUpdate === 'config_option_update')
+    .params.update.configOptions[0].options.some(option => option.value === 'test/reloaded'));
   assert.equal((await c.request('session/prompt', { sessionId: sid,
     prompt: [{ type: 'text', text: '/compact 保留代码修改' }] })).result.stopReason, 'end_turn');
   const compactions = c.records.filter(record => record.params?.sessionId === sid &&
@@ -1051,6 +1055,55 @@ test('推理级别切换实际传入 pi，切换模型后刷新支持范围', as
   assert.deepEqual(update.configOptions[1].options.map(option => option.value), ['off']);
   assert.equal(update.configOptions[1].currentValue, 'off');
   assert.equal((await c.request('session/set_config_option', { sessionId: sid, configId: 'thinking', value: 'high' })).error.code, -32602);
+});
+
+test('本机 pi 历史会话读取最新模型配置，reload 后同步新增模型并保留原模型', { skip: !process.env.PI_ACP_SMOKE }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'pi-acp-model-reload-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const env = { PI_CODING_AGENT_DIR: directory };
+  const extension = join(directory, 'history.ts');
+  await writeFile(extension, `export default function (pi: any) {
+    pi.registerCommand('save-history', { handler: async (_args: string, ctx: any) => {
+      ctx.sessionManager.appendMessage({ role: 'user', content: '历史测试', timestamp: Date.now() });
+    } });
+  }`);
+  const args = ['--extension', extension];
+  const writeModels = ids => writeFile(join(directory, 'models.json'), JSON.stringify({ providers: {
+    'reload-test': { baseUrl: 'http://localhost:1/v1', api: 'openai-completions', apiKey: 'test',
+      models: ids.map(id => ({ id, name: id, reasoning: false, input: ['text'],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 100 })) },
+  } }));
+  await writeModels(['original']);
+  await writeFile(join(directory, 'settings.json'), JSON.stringify({ defaultProvider: 'reload-test', defaultModel: 'original' }));
+  const c = await client(t, true, undefined, args, env);
+  const sid = await session(c);
+  assert.equal((await c.request('session/prompt', { sessionId: sid,
+    prompt: [{ type: 'text', text: '/save-history' }] })).result?.stopReason, 'end_turn');
+  assert.deepEqual((await c.request('session/close', { sessionId: sid })).result, {});
+  const exited = once(c.child, 'exit');
+  c.child.stdin.end();
+  await exited;
+
+  await writeModels(['original', 'added']);
+  await writeFile(join(directory, 'settings.json'), JSON.stringify({ defaultProvider: 'reload-test', defaultModel: 'added' }));
+  const reopened = await client(t, true, c.directory, args, env);
+  await reopened.request('initialize', { protocolVersion: 1 });
+  const fresh = await reopened.request('session/new', { cwd: root, mcpServers: [] });
+  assert.equal(fresh.result?.models.currentModelId, 'reload-test/added', JSON.stringify(fresh));
+  assert.equal((await reopened.request('session/close', { sessionId: fresh.result.sessionId })).error, undefined);
+  const loaded = await reopened.request('session/load', { sessionId: sid, cwd: root, mcpServers: [] });
+  assert.ok(loaded.result, JSON.stringify(loaded));
+  assert.equal(loaded.result.models.currentModelId, 'reload-test/original');
+  assert.ok(loaded.result.models.availableModels.some(model => model.modelId === 'reload-test/added'));
+  assert.equal((await reopened.request('session/set_model', { sessionId: sid, modelId: 'reload-test/added' })).error, undefined);
+
+  await writeModels(['original', 'added', 'hot-added']);
+  const reloaded = await reopened.request('session/prompt', { sessionId: sid, prompt: [{ type: 'text', text: '/reload' }] });
+  assert.equal(reloaded.result?.stopReason, 'end_turn', JSON.stringify(reloaded));
+  const config = reopened.records.findLast(record => record.params?.update?.sessionUpdate === 'config_option_update')
+    .params.update.configOptions.find(option => option.id === 'model');
+  assert.equal(config.currentValue, 'reload-test/added');
+  assert.ok(config.options.some(option => option.value === 'reload-test/hot-added'));
 });
 
 test('本机 pi 启动及扩展握手（显式启用，不调用模型）', { skip: !process.env.PI_ACP_SMOKE }, async t => {

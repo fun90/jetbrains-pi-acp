@@ -11,7 +11,7 @@ Requires **Node.js 22.19.0+** and a JetBrains IDE with ACP support, such as Inte
 1. Sign in to your model provider from a terminal:
 
    ```bash
-   npx --yes jetbrains-pi-acp@0.1.5 --setup
+   npx --yes jetbrains-pi-acp@0.1.6 --setup
    ```
 
    In pi, run `/login`, complete sign-in, then exit pi and return to the IDE. Credentials are managed by pi.
@@ -23,7 +23,7 @@ Requires **Node.js 22.19.0+** and a JetBrains IDE with ACP support, such as Inte
      "agent_servers": {
        "pi": {
          "command": "npx",
-         "args": ["--yes", "jetbrains-pi-acp@0.1.5"],
+         "args": ["--yes", "jetbrains-pi-acp@0.1.6"],
          "use_idea_mcp": true,
          "use_custom_mcp": true
        }
@@ -52,7 +52,7 @@ The IDE must be able to find `npx`; use its absolute path if needed. Menu locati
 Append pi options after `--` in the agent's `args`, for example:
 
 ```json
-["--yes", "jetbrains-pi-acp@0.1.5", "--", "--model", "provider/model-id", "--thinking", "medium"]
+["--yes", "jetbrains-pi-acp@0.1.6", "--", "--model", "provider/model-id", "--thinking", "medium"]
 ```
 
 Use configuration options here, not initial prompts, interactive mode, or session-selection arguments. The adapter manages RPC mode and sessions.
@@ -60,6 +60,8 @@ Use configuration options here, not initial prompts, interactive mode, or sessio
 To use an external pi executable, add `--pi-command /absolute/path/to/pi` before `--`, or set `PI_ACP_PI_COMMAND`. Verify compatibility when using other pi versions.
 
 Sessions use pi's native storage, normally `~/.pi/agent/sessions/`, and respect pi's session-directory settings. History is filtered by the project working directory. Avoid accessing the same session simultaneously from multiple adapters or from pi and the IDE.
+
+The first time you open a historical session after restarting ACP, pi reads its current configuration, including newly added models, extensions, skills, and prompts. For an open session, send `/reload` to refresh configuration and the IDE's model and command lists. Historical sessions retain their selected model and reasoning level; changing the default model in `settings.json` does not switch an existing session. Select the new model in the IDE's model menu. Custom models normally live in `~/.pi/agent/models.json`, or under `PI_CODING_AGENT_DIR` when set. Authentication for added models must also be available to the pi process launched by the IDE.
 
 Restart the agent connection after updating the adapter or changing startup options.
 
