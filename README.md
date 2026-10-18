@@ -11,7 +11,7 @@ Requires **Node.js 22.19.0+** and a JetBrains IDE with ACP support, such as Inte
 1. Sign in to your model provider from a terminal:
 
    ```bash
-   npx --yes jetbrains-pi-acp@0.1.4 --setup
+   npx --yes jetbrains-pi-acp@0.1.5 --setup
    ```
 
    In pi, run `/login`, complete sign-in, then exit pi and return to the IDE. Credentials are managed by pi.
@@ -23,7 +23,7 @@ Requires **Node.js 22.19.0+** and a JetBrains IDE with ACP support, such as Inte
      "agent_servers": {
        "pi": {
          "command": "npx",
-         "args": ["--yes", "jetbrains-pi-acp@0.1.4"],
+         "args": ["--yes", "jetbrains-pi-acp@0.1.5"],
          "use_idea_mcp": true,
          "use_custom_mcp": true
        }
@@ -41,7 +41,7 @@ The IDE must be able to find `npx`; use its absolute path if needed. Menu locati
 - Native pi session history: list, load, resume, rename, fork, and delete sessions.
 - Model and reasoning-level selection, plus full-access, standard, read-only, and plan modes.
 - UI text (config names, mode and command descriptions, permission options, errors) follows the system language: Chinese for `zh*` locales, English otherwise, based on the first non-empty `LC_ALL`, `LC_MESSAGES`, or `LANG`, falling back to the system locale. Tool descriptions and system prompts sent to the model are always English. Restart the adapter after changing the language.
-- File diffs for built-in `edit`/`write` tools, with optional Air Git patches and per-turn file reports.
+- File diffs for built-in `edit`/`write` tools, with optional Air Git patches and per-turn file reports. File report snapshots follow Git ignore rules, including `.gitignore`, while retaining tracked files; non-Git projects or systems without Git use filesystem scanning.
 - stdio/HTTP MCP forwarding, including IDE tools; subagents and background shell tasks with targeted cancellation.
 - Steering, terminal stdin, forms, and URL interactions when supported by the client. Air v1 provides `/stdin text` and `/eof` during command execution.
 
@@ -52,7 +52,7 @@ The IDE must be able to find `npx`; use its absolute path if needed. Menu locati
 Append pi options after `--` in the agent's `args`, for example:
 
 ```json
-["--yes", "jetbrains-pi-acp@0.1.4", "--", "--model", "provider/model-id", "--thinking", "medium"]
+["--yes", "jetbrains-pi-acp@0.1.5", "--", "--model", "provider/model-id", "--thinking", "medium"]
 ```
 
 Use configuration options here, not initial prompts, interactive mode, or session-selection arguments. The adapter manages RPC mode and sessions.

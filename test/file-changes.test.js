@@ -9,7 +9,7 @@ import { Agent } from '../src/agent.js';
 import { changedFiles, fileSnapshot } from '../src/file-changes.js';
 import { t as msg } from '../src/i18n.js';
 
-test('工作目录快照覆盖新增、同大小修改、删除、重命名、二进制和忽略文件', async t => {
+test('非 Git 目录快照覆盖新增、同大小修改、删除、重命名和二进制文件', async t => {
   const cwd = await mkdtemp(join(tmpdir(), 'pi-acp-changes-'));
   t.after(() => rm(cwd, { recursive: true, force: true }));
   for (const name of ['modified', 'deleted', 'renamed', 'unchanged']) await writeFile(join(cwd, name), '旧');
@@ -29,6 +29,48 @@ test('工作目录快照覆盖新增、同大小修改、删除、重命名、�
   assert.equal(before.incomplete || after.incomplete, false);
   assert.deepEqual(changedFiles(before, after).sort(),
     ['modified', 'deleted', 'renamed', '新 文件', 'ignored/binary'].map(name => join(cwd, name)).sort());
+});
+
+test('Git 快照遵守嵌套忽略和否定规则，保留已跟踪文件并支持子目录与 worktree', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'pi-acp-ignore-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const cwd = join(directory, 'repo');
+  await mkdir(cwd);
+  const git = args => execFileSync('git', args, { cwd, stdio: 'pipe' });
+  git(['init']);
+  await mkdir(join(cwd, 'target'));
+  await mkdir(join(cwd, 'nested'));
+  await writeFile(join(cwd, '.gitignore'), 'target/\n*.class\n!keep.class\n');
+  await writeFile(join(cwd, 'nested', '.gitignore'), '*.tmp\n!keep.tmp\n');
+  for (const name of ['target/tracked.class', 'tracked.class', 'tracked-deleted.class']) {
+    await writeFile(join(cwd, name), '旧');
+    git(['add', '-f', name]);
+  }
+  git(['add', '.gitignore', 'nested/.gitignore']);
+  git(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-m', '初始化']);
+  const before = await fileSnapshot(cwd);
+  for (const name of ['target/generated.class', 'ignored.class', 'nested/ignored.tmp',
+    'target/tracked.class', 'tracked.class', 'keep.class', 'nested/keep.tmp', '新 文件\n名.txt']) {
+    await writeFile(join(cwd, name), '新');
+  }
+  await rm(join(cwd, 'tracked-deleted.class'));
+  const after = await fileSnapshot(cwd);
+  assert.equal(before.incomplete || after.incomplete, false);
+  const expected = ['target/tracked.class', 'tracked.class', 'tracked-deleted.class',
+    'keep.class', 'nested/keep.tmp', '新 文件\n名.txt'];
+  assert.deepEqual(changedFiles(before, after).sort(), expected.map(name => join(cwd, name)).sort());
+  assert.equal(after.files.has(join(cwd, 'target', 'generated.class')), false);
+  const nested = await fileSnapshot(join(cwd, 'nested'));
+  assert.equal(nested.incomplete, false);
+  assert.deepEqual([...nested.files.keys()].sort(), ['.gitignore', 'keep.tmp'].map(name => join(cwd, 'nested', name)).sort());
+
+  const worktree = join(directory, 'worktree');
+  git(['worktree', 'add', '--detach', worktree]);
+  await writeFile(join(worktree, 'ignored.class'), '构建产物');
+  const snapshot = await fileSnapshot(worktree);
+  assert.equal(snapshot.incomplete, false);
+  assert.equal(snapshot.files.has(join(worktree, 'ignored.class')), false);
+  assert.equal(snapshot.files.has(join(worktree, 'target', 'tracked.class')), true);
 });
 
 test('符号链接不跟随到目录外，链接自身变化仍可报告', async t => {
