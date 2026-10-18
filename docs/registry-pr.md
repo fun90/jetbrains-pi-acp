@@ -1,6 +1,6 @@
 新增 `jetbrains-pi-acp`，通过 ACP 将 JetBrains IDE 等客户端连接到 pi coding agent。
 
-- 使用 npm 包 `jetbrains-pi-acp@0.1.5` 分发，固定依赖 pi `1.3.0`，无需全局安装 pi。
+- 当前 PR 清单使用已发布的 npm 包 `jetbrains-pi-acp@0.1.4`；待 `0.1.5` 发布成功后更新版本。固定依赖 pi `1.3.0`，无需全局安装 pi。
 - 支持 ACP v1/v2、会话历史、权限控制、文件 diff、子 agent 和后台任务；扩展功能按客户端能力协商。
 - 客户端支持时在 `initialize` 中声明终端认证，通过 `--setup` 启动 pi，再执行 `/login` 登录模型提供商。
 - 使用 MIT 许可证，提供 16×16、`currentColor` 单色 SVG 图标，以及中英文 README。
@@ -17,7 +17,12 @@ npm：https://www.npmjs.com/package/jetbrains-pi-acp
 - `npm pack --dry-run`：26 个文件，包含中英文 README，不包含测试、凭据或本地临时文件。
 - AirOpsCat 项目快照扫描完整，819 个文件，`target/` 文件为 0。
 
-发布经仓库 GitHub Actions Trusted Publishing（OIDC）执行，状态以 npm 和版本 tag 对应的 Actions 结果为准。
+`0.1.5` 发布状态：
+
+- 源码与 `v0.1.5` tag 已推送；[GitHub Actions](https://github.com/fun90/jetbrains-pi-acp/actions/runs/39091529304) 的测试及打包检查通过。
+- OIDC 发布时 npm 返回 `404 Not Found - PUT https://registry.npmjs.org/jetbrains-pi-acp`。核对 npm registry 后，`0.1.5` 尚未发布，`latest` 仍为 `0.1.4`。
+- 需要维护者核对 npm Trusted Publisher：仓库 `fun90/jetbrains-pi-acp`、workflow `publish.yml`、Environment 留空。修复绑定后重跑失败的发布 job。
+- `0.1.5` Registry 清单已在本地准备好并通过官方离线构建校验；PR 清单暂保留已发布的 `0.1.4`，避免引用不存在的 npm 版本。
 
 与现有 `pi-acp` 及其他 JetBrains pi 适配器为不同项目，使用独立 Registry ID 和 npm 包名。
 
