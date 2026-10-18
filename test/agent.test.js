@@ -1687,7 +1687,10 @@ for (const version of [1, 2]) {
       const leaf = (await c.wait(record => record.params?.sessionId === middle &&
         record.params.update.sessionUpdate === 'subagent_spawned')).params.update.subagentSessionId;
       await c.wait(record => record.params?.sessionId === sid && record.params.update.sessionUpdate === 'subagent_state_update' &&
-        record.params.update.state === 'completed');
+        record.params.update.subagentSessionId === middle && record.params.update.state === 'completed');
+      // 中层完成不代表叶子完成，崩溃前须确保预期恢复的回答已写入历史。
+      await c.wait(record => record.params?.sessionId === middle && record.params.update.sessionUpdate === 'subagent_state_update' &&
+        record.params.update.subagentSessionId === leaf && record.params.update.state === 'completed');
       const taskId = (await c.wait(record => record.params?.update?.sessionUpdate === 'async_task_spawned'))
         .params.update.asyncTaskId;
       await c.crash();
@@ -1702,7 +1705,7 @@ for (const version of [1, 2]) {
           record.params.update.sessionUpdate === 'subagent_spawned' && record.params.update.subagentSessionId === childId);
         const content = d.records.findIndex(record => record.params?.sessionId === childId &&
           record.params.update.sessionUpdate === 'agent_message_chunk');
-        assert.ok(spawn >= 0 && content > spawn);
+        assert.ok(spawn >= 0 && content > spawn, JSON.stringify({ version, parentId, childId, spawn, content }));
         assert.ok(d.records.some(record => record.params?.sessionId === parentId &&
           record.params.update.sessionUpdate === 'subagent_state_update' &&
           record.params.update.subagentSessionId === childId && record.params.update.state === 'completed'));
