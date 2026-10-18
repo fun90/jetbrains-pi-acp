@@ -41,7 +41,7 @@ The IDE must be able to find `npx`; use its absolute path if needed. Menu locati
 - Native pi session history: list, load, resume, rename, fork, and delete sessions.
 - Model and reasoning-level selection, plus full-access, standard, read-only, and plan modes.
 - UI text (config names, mode and command descriptions, permission options, errors) follows the system language: Chinese for `zh*` locales, English otherwise, based on the first non-empty `LC_ALL`, `LC_MESSAGES`, or `LANG`, falling back to the system locale. Tool descriptions and system prompts sent to the model are always English. Restart the adapter after changing the language.
-- File diffs for built-in `edit`/`write` tools, with optional Air Git patches and per-turn file reports. File report snapshots follow Git ignore rules, including `.gitignore`, while retaining tracked files; non-Git projects or systems without Git use filesystem scanning.
+- File diffs for built-in `edit`/`write` tools, with optional Air Git patches and per-turn file reports. File report snapshots follow Git ignore rules, including `.gitignore`, while retaining tracked files; non-Git projects or systems without Git use filesystem scanning that skips common dependency, build, and cache directories such as `node_modules/`, `vendor/`, `target/`, `build/`, `dist/`, `coverage/`, `.cache/`, and `.venv/`, including nested directories. Snapshots always skip `.DS_Store`.
 - stdio/HTTP MCP forwarding, including IDE tools; subagents and background shell tasks with targeted cancellation.
 - Steering, terminal stdin, forms, and URL interactions when supported by the client. Air v1 provides `/stdin text` and `/eof` during command execution.
 

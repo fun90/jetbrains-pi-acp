@@ -31,6 +31,45 @@ test('非 Git 目录快照覆盖新增、同大小修改、删除、重命名和
     ['modified', 'deleted', 'renamed', '新 文件', 'ignored/binary'].map(name => join(cwd, name)).sort());
 });
 
+test('非 Git 扫描跳过嵌套依赖、构建与缓存目录，保留普通源码和同名文件', async t => {
+  const cwd = await mkdtemp(join(tmpdir(), 'pi-acp-fallback-'));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const before = await fileSnapshot(cwd);
+  for (const name of ['node_modules/pkg', 'target/classes', 'build', 'dist', 'coverage',
+    'nested/vendor', 'nested/.gradle', 'nested/.next', 'nested/.cache',
+    'nested/.venv', 'nested/__pycache__', 'nested/.pytest_cache']) {
+    await mkdir(join(cwd, name), { recursive: true });
+    await writeFile(join(cwd, name, 'generated'), '生成内容');
+  }
+  await mkdir(join(cwd, 'src'));
+  await writeFile(join(cwd, 'src', 'app.js'), '源码');
+  await writeFile(join(cwd, 'src', 'build'), '同名普通文件');
+  await writeFile(join(cwd, '.DS_Store'), '目录元数据');
+  await writeFile(join(cwd, 'src', '.DS_Store'), '嵌套目录元数据');
+  const after = await fileSnapshot(cwd);
+  assert.equal(before.incomplete || after.incomplete, false);
+  assert.deepEqual(changedFiles(before, after).sort(), ['src/app.js', 'src/build'].map(name => join(cwd, name)).sort());
+});
+
+test('Git 不可用时也应用常见目录排除规则', async t => {
+  const cwd = await mkdtemp(join(tmpdir(), 'pi-acp-no-git-'));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  execFileSync('git', ['init'], { cwd, stdio: 'pipe' });
+  await mkdir(join(cwd, 'target'));
+  await writeFile(join(cwd, 'target', 'generated'), '构建产物');
+  await writeFile(join(cwd, 'source.js'), '源码');
+  const savedPath = process.env.PATH;
+  try {
+    process.env.PATH = cwd;
+    const snapshot = await fileSnapshot(cwd);
+    assert.equal(snapshot.incomplete, false);
+    assert.deepEqual([...snapshot.files.keys()], [join(cwd, 'source.js')]);
+  } finally {
+    if (savedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = savedPath;
+  }
+});
+
 test('Git 快照遵守嵌套忽略和否定规则，保留已跟踪文件并支持子目录与 worktree', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'pi-acp-ignore-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -40,6 +79,7 @@ test('Git 快照遵守嵌套忽略和否定规则，保留已跟踪文件并支�
   git(['init']);
   await mkdir(join(cwd, 'target'));
   await mkdir(join(cwd, 'nested'));
+  await mkdir(join(cwd, 'build'));
   await writeFile(join(cwd, '.gitignore'), 'target/\n*.class\n!keep.class\n');
   await writeFile(join(cwd, 'nested', '.gitignore'), '*.tmp\n!keep.tmp\n');
   for (const name of ['target/tracked.class', 'tracked.class', 'tracked-deleted.class']) {
@@ -47,19 +87,22 @@ test('Git 快照遵守嵌套忽略和否定规则，保留已跟踪文件并支�
     git(['add', '-f', name]);
   }
   git(['add', '.gitignore', 'nested/.gitignore']);
+  await writeFile(join(cwd, '.DS_Store'), '目录元数据');
+  git(['add', '-f', '.DS_Store']);
   git(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-m', '初始化']);
   const before = await fileSnapshot(cwd);
   for (const name of ['target/generated.class', 'ignored.class', 'nested/ignored.tmp',
-    'target/tracked.class', 'tracked.class', 'keep.class', 'nested/keep.tmp', '新 文件\n名.txt']) {
+    'target/tracked.class', 'tracked.class', 'keep.class', 'nested/keep.tmp', 'build/source.js', '新 文件\n名.txt']) {
     await writeFile(join(cwd, name), '新');
   }
   await rm(join(cwd, 'tracked-deleted.class'));
   const after = await fileSnapshot(cwd);
   assert.equal(before.incomplete || after.incomplete, false);
   const expected = ['target/tracked.class', 'tracked.class', 'tracked-deleted.class',
-    'keep.class', 'nested/keep.tmp', '新 文件\n名.txt'];
+    'keep.class', 'nested/keep.tmp', 'build/source.js', '新 文件\n名.txt'];
   assert.deepEqual(changedFiles(before, after).sort(), expected.map(name => join(cwd, name)).sort());
   assert.equal(after.files.has(join(cwd, 'target', 'generated.class')), false);
+  assert.equal(after.files.has(join(cwd, '.DS_Store')), false);
   const nested = await fileSnapshot(join(cwd, 'nested'));
   assert.equal(nested.incomplete, false);
   assert.deepEqual([...nested.files.keys()].sort(), ['.gitignore', 'keep.tmp'].map(name => join(cwd, 'nested', name)).sort());

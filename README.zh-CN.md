@@ -42,7 +42,7 @@ IDE 必须能找到 `npx`，必要时使用其绝对路径。菜单位置随 IDE
 - 使用 pi 原生历史，支持会话列表、加载、恢复、改名、分叉和删除。
 - 支持切换模型与推理级别，以及完全访问、标准访问、只读和规划模式。
 - 界面文案（配置名称、模式说明、命令说明、授权选项、报错等）按系统语言自动切换中英文，给模型看的工具描述和系统提示固定使用英文。语言判断依次读取非空的 `LC_ALL`、`LC_MESSAGES`、`LANG`，未设置时使用系统默认语言；中文使用中文，其余语言使用英文。更改系统语言后需重启适配器。
-- 展示内置 `edit/write` 工具的文件 diff，可协商 Air Git patch 和每轮文件报告。文件报告快照遵守 `.gitignore` 等 Git 忽略规则，保留已跟踪文件；非 Git 项目或 Git 不可用时使用文件系统扫描。
+- 展示内置 `edit/write` 工具的文件 diff，可协商 Air Git patch 和每轮文件报告。文件报告快照遵守 `.gitignore` 等 Git 忽略规则，保留已跟踪文件；非 Git 项目或 Git 不可用时使用文件系统扫描，跳过 `node_modules/`、`vendor/`、`target/`、`build/`、`dist/`、`coverage/`、`.cache/`、`.venv/` 等常见依赖、构建和缓存目录（包括嵌套目录）。快照始终跳过 `.DS_Store`。
 - 转发 stdio/HTTP MCP 配置及 IDE 工具；支持子 agent、后台 shell 任务和定向停止。
 - 按客户端能力提供 steering、终端 stdin、表单和 URL 交互。Air v1 可在命令执行期间发送 `/stdin 文本` 和 `/eof`。
 

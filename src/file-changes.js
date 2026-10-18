@@ -4,6 +4,11 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 
 const executeFile = promisify(execFile);
+const fallbackIgnoredDirectories = new Set([
+  'node_modules', 'vendor', 'target', 'build', 'dist', 'out', 'coverage',
+  '.gradle', '.next', '.nuxt', '.output', '.cache',
+  '.venv', 'venv', '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox',
+]);
 
 export async function fileSnapshot(cwd) {
   const files = new Map();
@@ -12,20 +17,22 @@ export async function fileSnapshot(cwd) {
   let entries = 0;
   let incomplete = false;
   const ignored = new Set();
+  let fallback = false;
   try {
     // Git 保留已跟踪文件，并处理嵌套 .gitignore、否定规则及仓库本地忽略规则。
     const { stdout } = await executeFile('git',
       ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'],
       { cwd, timeout: 2000, maxBuffer: 4 * 1024 * 1024 });
     for (const path of stdout.split('\0')) if (path) ignored.add(join(cwd, path.replace(/\/$/, '')));
-  } catch { /* 非 Git 项目或 Git 不可用时保留文件系统扫描。 */ }
+  } catch { fallback = true; }
   while (directories.length) {
     if (Date.now() > deadline) return { files, incomplete: true };
     const directory = directories.pop();
     try {
       if ((await lstat(directory)).isSymbolicLink()) { incomplete = true; continue; }
       for await (const entry of await opendir(directory)) {
-        if (entry.name === '.git') continue;
+        if (entry.name === '.git' || entry.name === '.DS_Store' ||
+            (fallback && entry.isDirectory() && fallbackIgnoredDirectories.has(entry.name))) continue;
         const path = join(directory, entry.name);
         if (ignored.has(path)) continue;
         // shortcut: 每次最多扫描 20000 项或 2 秒，大项目需要增量文件监听时再升级。
