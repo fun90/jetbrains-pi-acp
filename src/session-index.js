@@ -7,7 +7,7 @@ import { t } from './i18n.js';
 
 const executeFile = promisify(execFile);
 
-// 历史会话索引：列表、查找、归档及列表变化订阅。
+// 历史会话索引：列表、查找、归档及列表变化订阅；列表默认不含子 agent 会话，仅内部查找时包含。
 // 历史由临时启动的 discovery pi 进程通过 /__acp_list 读取。
 export class SessionIndex {
   constructor(agent) {
@@ -16,7 +16,7 @@ export class SessionIndex {
   }
 
   async find(sessionId, cwd) {
-    const { sessions } = await this.list(cwd === undefined ? {} : { cwd }, { includeArchived: true });
+    const { sessions } = await this.list(cwd === undefined ? {} : { cwd }, { includeArchived: true, includeSubagents: true });
     return sessions.find(info => info.sessionId === sessionId && (cwd === undefined || resolve(info.cwd) === resolve(cwd)));
   }
 
@@ -31,7 +31,7 @@ export class SessionIndex {
     }) };
   }
 
-  async read(context, params) {
+  async read(context, params, { includeSubagents = false } = {}) {
     let cwds = [context.cwd];
     if (params._meta?.jetbrains?.air?.list?.includeWorktrees === true) {
       try {
@@ -44,10 +44,10 @@ export class SessionIndex {
     context.history = undefined;
     await context.pi.request('prompt', { message: `/__acp_list ${JSON.stringify({ all: params.cwd === undefined, cwds })}` });
     if (!context.history) throw new Error(t('piNoHistory'));
-    return context.history;
+    return includeSubagents ? context.history : context.history.filter(info => !info.subagent);
   }
 
-  async list(params, { includeArchived = false } = {}) {
+  async list(params, { includeArchived = false, includeSubagents = false } = {}) {
     if (params.cursor !== undefined && (typeof params.cursor !== 'string' || !/^\d+$/.test(params.cursor))) {
       throw invalid(t('listCursorInvalid'));
     }
@@ -65,7 +65,7 @@ export class SessionIndex {
     }
     const created = await this.agent.newSession({ cwd: params.cwd ?? process.cwd(), mcpServers: [] }, { discovery: true });
     try {
-      const history = (await this.read(created, params)).filter(info =>
+      const history = (await this.read(created, params, { includeSubagents })).filter(info =>
         archived === 'all' || (info.archived === true) === (archived === 'archived'));
       const sessions = history.slice(offset, offset + limit);
       return { sessions, ...(offset + limit < history.length ? { nextCursor: String(offset + limit) } : {}) };

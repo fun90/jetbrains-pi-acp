@@ -185,7 +185,7 @@ export default function (pi: any) {
       return { message: { ...event.message, acpMessageId: id } };
     }
   });
-  const archiveCache = new Map<string, { modified: number; archived: boolean }>();
+  const archiveCache = new Map<string, { modified: number; archived: boolean; children: string[]; records: string[] }>();
   for (const [name, server] of Object.entries(config.mcpServers)) {
     pi.registerMcpServer(name, server);
   }
@@ -219,19 +219,42 @@ export default function (pi: any) {
       const currentPaths = new Set(sessions.map(session => session.path));
       const idsByPath = new Map(sessions.map(session => [session.path, session.id]));
       for (const path of archiveCache.keys()) if (!currentPaths.has(path)) archiveCache.delete(path);
-      ctx.ui.notify(`PI_ACP_SESSIONS:${JSON.stringify(sessions.map(session => {
+      const infos = sessions.map(session => {
         const modified = statSync(session.path).mtimeMs;
         let cached = archiveCache.get(session.path);
         if (!cached || cached.modified !== modified) {
-          const archived = SessionManager.open(session.path).getBranch().findLast((entry: any) =>
+          const manager = SessionManager.open(session.path);
+          const archived = manager.getBranch().findLast((entry: any) =>
             entry.type === 'custom' && entry.customType === 'acp_archive')?.data === true;
-          cached = { modified, archived };
+          const entries = manager.getEntries() as any[];
+          const children = entries.flatMap(entry =>
+            entry.type === 'custom' && entry.customType === 'acp_task' && entry.data?.kind === 'agent' &&
+            entry.data.owner === session.id && typeof entry.data.sessionId === 'string' ? [entry.data.sessionId] : []);
+          const records = entries.flatMap(entry =>
+            entry.type === 'custom' && entry.customType === 'subagents:record' && typeof entry.data?.id === 'string' ? [entry.data.id] : []);
+          cached = { modified, archived, children, records };
           archiveCache.set(session.path, cached);
         }
         return { sessionId: session.id, cwd: session.cwd, title: session.name || session.firstMessage,
           updatedAt: session.modified.toISOString(), path: session.path, archived: cached.archived,
           ...(idsByPath.has(session.parentSessionPath) ? { forkedFrom: idsByPath.get(session.parentSessionPath) } : {}) };
-      }))}`, 'info');
+      });
+      // 子 agent 会话标记 subagent，由适配器从列表中过滤：
+      // 1) 适配器自己的子 agent：父会话的 acp_task 引用其 ID（自有格式，稳定）；
+      // 2) 旧版 @tintinweb/pi-subagents 写在顶层目录的历史会话：名称为 `类型#8位hex`，
+      //    且父会话有 id 以该 hex 开头的 subagents:record。
+      //    当前 pi-subagents 的子会话在嵌套目录或临时目录，SessionManager.list 本就不返回。
+      // shortcut: 规则 2 只为旧包的历史数据，不再有此类会话后可整段删除。
+      const children = new Set(sessions.flatMap(session => archiveCache.get(session.path)?.children ?? []));
+      const recordsByPath = new Map(sessions.map(session => [session.path, archiveCache.get(session.path)?.records ?? []]));
+      const isSubagent = (session: any) => {
+        const hex = /#([0-9a-f]{8})$/.exec(session.name ?? '')?.[1];
+        return children.has(session.id) || (!!hex && !!session.parentSessionPath &&
+          !!recordsByPath.get(session.parentSessionPath)?.some(id => id.startsWith(hex)));
+      };
+      const subagents = new Set(sessions.filter(isSubagent).map(session => session.id));
+      ctx.ui.notify(`PI_ACP_SESSIONS:${JSON.stringify(infos.map(info =>
+        subagents.has(info.sessionId) ? { ...info, subagent: true } : info))}`, 'info');
     },
   });
   pi.on('tool_call', async (event: any, ctx: any) => {

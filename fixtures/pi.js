@@ -136,17 +136,27 @@ readJsonl(process.stdin, request => {
     const options = arguments_.startsWith('{') ? JSON.parse(arguments_) : {
       all: arguments_ === 'all', cwds: [process.cwd()],
     };
-    const sessions = readdirSync(directory).filter(file => file.endsWith('.jsonl')).map(file => {
+    const all = readdirSync(directory).filter(file => file.endsWith('.jsonl')).map(file => {
       const path = join(directory, file);
       const saved = readFileSync(path, 'utf8').trim().split('\n').map(JSON.parse);
-      const header = saved[0];
+      return { path, saved, header: saved[0] };
+    });
+    const children = new Set(all.flatMap(({ saved, header }) => saved.filter(entry => entry.customType === 'acp_task' &&
+      entry.data?.kind === 'agent' && entry.data.owner === header.id).map(entry => entry.data.sessionId)));
+    // 旧版 @tintinweb/pi-subagents：名称 `类型#8位hex`，且父会话有 id 以该 hex 开头的 subagents:record。
+    for (const { saved, header } of all) {
+      const hex = /#([0-9a-f]{8})$/.exec(saved.findLast(entry => entry.type === 'session_info')?.name ?? '')?.[1];
+      const parent = all.find(candidate => candidate.path === header.parentSession);
+      if (hex && parent?.saved.some(entry => entry.customType === 'subagents:record' && entry.data.id.startsWith(hex))) children.add(header.id);
+    }
+    const sessions = all.map(({ path, saved, header }) => {
       return { sessionId: header.id, cwd: header.cwd, title: saved.findLast(entry => entry.type === 'session_info')?.name || '测试会话',
-        updatedAt: saved.at(-1).timestamp, path,
+        updatedAt: saved.at(-1).timestamp, path, ...(children.has(header.id) ? { subagent: true } : {}),
         parentSessionPath: header.parentSession,
         archived: saved.findLast(entry => entry.type === 'custom' && entry.customType === 'acp_archive')?.data === true };
     }).filter(session => options.all || options.cwds.some(cwd => resolve(session.cwd) === resolve(cwd)))
-      .map(({ parentSessionPath, ...session }, _, all) => {
-        const parent = all.find(candidate => candidate.path === parentSessionPath);
+      .map(({ parentSessionPath, ...session }, _, listed) => {
+        const parent = listed.find(candidate => candidate.path === parentSessionPath);
         return { ...session, ...(parent ? { forkedFrom: parent.sessionId } : {}) };
       });
     send({ type: 'extension_ui_request', method: 'notify', message: `PI_ACP_SESSIONS:${JSON.stringify(sessions)}` });

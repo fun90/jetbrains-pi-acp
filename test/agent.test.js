@@ -1146,8 +1146,35 @@ for (const real of [false, true]) {
     await writeFile(join(directory, 'history.jsonl'), entries.map(entry => JSON.stringify(entry)).join('\n') + '\n');
     const otherId = randomUUID();
     await writeFile(join(directory, 'other.jsonl'), JSON.stringify({ ...entries[0], id: otherId, cwd: tmpdir() }) + '\n');
+    const ownerId = randomUUID();
+    const childId = randomUUID();
+    await writeFile(join(directory, 'owner.jsonl'), [
+      { type: 'session', version: 3, id: ownerId, cwd: root, timestamp },
+      { type: 'custom', id: 'task', parentId: null, timestamp, customType: 'acp_task',
+        data: { version: 1, owner: ownerId, id: randomUUID(), kind: 'agent', sessionId: childId } },
+    ].map(entry => JSON.stringify(entry)).join('\n') + '\n');
+    await writeFile(join(directory, 'child.jsonl'), JSON.stringify({ ...entries[0], id: childId }) + '\n');
+    // 旧版 @tintinweb/pi-subagents 的子会话：有 parentSession、名称含 #hex，父会话有对应 subagents:record。
+    const ownerPath = join(directory, 'owner.jsonl');
+    const extChildId = randomUUID();
+    const extPlainId = randomUUID();
+    await writeFile(ownerPath, [
+      ...(await readFile(ownerPath, 'utf8')).trim().split('\n'),
+      JSON.stringify({ type: 'custom', id: 'rec', parentId: 'task', timestamp, customType: 'subagents:record',
+        data: { id: 'abcdef12-3456-789', type: 'general-purpose', status: 'completed' } }),
+    ].join('\n') + '\n');
+    await writeFile(join(directory, 'ext-child.jsonl'), [{ ...entries[0], id: extChildId, parentSession: ownerPath },
+      { type: 'session_info', id: 'n', parentId: null, timestamp, name: 'general-purpose#abcdef12' }].map(e => JSON.stringify(e)).join('\n') + '\n');
+    // 名称相似但父会话没有对应记录，应视为普通会话。
+    await writeFile(join(directory, 'ext-plain.jsonl'), [{ ...entries[0], id: extPlainId, parentSession: ownerPath },
+      { type: 'session_info', id: 'n', parentId: null, timestamp, name: 'general-purpose#00000000' }].map(e => JSON.stringify(e)).join('\n') + '\n');
     const listed = await c.request('session/list', { cwd: root });
     assert.ok(listed.result, JSON.stringify(listed));
+    assert.ok(listed.result.sessions.some(info => info.sessionId === ownerId));
+    assert.ok(!listed.result.sessions.some(info => info.sessionId === childId));
+    assert.ok(!listed.result.sessions.some(info => info.sessionId === extChildId));
+    assert.ok(listed.result.sessions.some(info => info.sessionId === extPlainId));
+    assert.ok(!('subagent' in listed.result.sessions.find(info => info.sessionId === ownerId)));
     const saved = listed.result.sessions.find(info => info.sessionId === sid);
     assert.equal(saved.title, '历史会话标题');
     assert.equal(saved.cwd, root);
