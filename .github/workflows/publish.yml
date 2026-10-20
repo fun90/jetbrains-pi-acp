@@ -72,5 +72,10 @@ jobs:
       - name: 核对已发布版本
         run: |
           version=$(node -p 'JSON.parse(require("fs").readFileSync("package.json", "utf8")).version')
-          npm view "jetbrains-pi-acp@$version" version dist.integrity
+          # 发布后 registry 元数据存在传播延迟,最多重试 10 次(约 100 秒)
+          for i in $(seq 1 10); do
+            npm view "jetbrains-pi-acp@$version" version dist.integrity && break
+            [ "$i" = 10 ] && exit 1
+            sleep 10
+          done
           npm view jetbrains-pi-acp dist-tags --json
