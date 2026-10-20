@@ -11,7 +11,7 @@
 1. 在终端中登录模型提供商：
 
    ```bash
-   npx --yes jetbrains-pi-acp@0.1.6 --setup
+   npx --yes jetbrains-pi-acp@0.1.7 --setup
    ```
 
    在 pi 中运行 `/login`，完成登录后退出 pi 并返回 IDE。凭据由 pi 管理。
@@ -23,7 +23,7 @@
      "agent_servers": {
        "pi": {
          "command": "npx",
-         "args": ["--yes", "jetbrains-pi-acp@0.1.6"],
+         "args": ["--yes", "jetbrains-pi-acp@0.1.7"],
          "use_idea_mcp": true,
          "use_custom_mcp": true
        }
@@ -53,7 +53,7 @@ IDE 必须能找到 `npx`，必要时使用其绝对路径。菜单位置随 IDE
 在 Agent 的 `args` 末尾添加 `--`，随后传递 pi 参数，例如：
 
 ```json
-["--yes", "jetbrains-pi-acp@0.1.6", "--", "--model", "provider/model-id", "--thinking", "medium"]
+["--yes", "jetbrains-pi-acp@0.1.7", "--", "--model", "provider/model-id", "--thinking", "medium"]
 ```
 
 这里只传配置选项，不传初始提示、交互模式或会话选择参数。RPC 模式和会话由适配器管理。
