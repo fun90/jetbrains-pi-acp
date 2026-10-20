@@ -768,6 +768,13 @@ test('命令发现、用量、状态、压缩、关闭和分叉', async t => {
     prompt: [{ type: 'text', text: '/status' }] })).result.stopReason, 'end_turn');
   assert.ok(c.records.findLast(record => record.params?.update?.sessionUpdate === 'agent_message_chunk')
     .params.update.content.text.endsWith(msg('statusContext', { tokens: 123, window: 1000, percent: ' (12.3%)' })));
+  // Air 附带上下文时（如选中的提交），命令仍应本地处理。
+  const before = c.records.length;
+  assert.equal((await c.request('session/prompt', { sessionId: sid,
+    prompt: [{ type: 'text', text: '/status\n\ncontext: renderer=vcsCommits title=Commits source=vcsLog project=/x\ncommits:\nabc | msg' }] }))
+    .result.stopReason, 'end_turn');
+  assert.ok(c.records.slice(before).some(record => record.params?.update?.sessionUpdate === 'agent_message_chunk' &&
+    record.params.update.content.text.endsWith(msg('statusContext', { tokens: 123, window: 1000, percent: ' (12.3%)' }))));
   assert.equal((await c.request('session/prompt', { sessionId: sid,
     prompt: [{ type: 'text', text: '/reload' }] })).result.stopReason, 'end_turn');
   assert.ok(c.records.findLast(record => record.params?.update?.sessionUpdate === 'config_option_update')

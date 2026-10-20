@@ -335,3 +335,20 @@ test('子 agent 回答完成后，定向停止仍能终止它留下的后台后�
   assert.equal(agent.tasks.tasks.has(background.taskId), false);
   assert.deepEqual(await agent.tasks.stop(parent, result.taskId), { stopped: false });
 });
+
+test('pi 自行发起的回合（无 session/prompt）也建立回合、转发输出并在结束后恢复空闲', async () => {
+  const { agent, parent, records } = await setup(air);
+  const states = [];
+  agent.onForegroundState = (_session, state) => states.push(state);
+  parent.blocks = new Map();
+  agent.event(parent, { type: 'agent_start' });
+  assert.ok(parent.turn);
+  agent.event(parent, { type: 'message_start', message: { role: 'assistant' } });
+  agent.event(parent, { type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: '子代理已完成' } });
+  assert.ok(records.some(record => record.params.update.content?.text === '子代理已完成'));
+  agent.refreshUsage = async () => {};
+  agent.event(parent, { type: 'agent_settled' });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(parent.turn, null);
+  assert.deepEqual(states, ['running', 'idle']);
+});

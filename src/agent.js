@@ -244,8 +244,10 @@ export class Agent {
     if (session.turn?.finishing) throw invalid(t('sessionReporting'));
     if (session.changingConfig) throw invalid(t('configChanging'));
     const prompt = convertPrompt(params.prompt);
-    if (!steering && !prompt.images && this.commands.isLocal(prompt.message.trim())) {
-      return this.commands.run(session, prompt.message.trim(), this.fileReportRequest(params));
+    // Air 会把选中的提交、文件等附件以 "context: renderer=..." 块追加在文本后，命令判断需先去掉。
+    const command = prompt.message.split(/\n\ncontext: renderer=/)[0].trim();
+    if (!steering && !prompt.images && this.commands.isLocal(command)) {
+      return this.commands.run(session, command, this.fileReportRequest(params));
     }
     return this.prompt(session, prompt, steering, steering ? undefined : this.fileReportRequest(params));
   }
@@ -334,49 +336,53 @@ export class Agent {
     this.update(session, { sessionUpdate: 'session_info_update', ...air({ agentFileChangeReport: report }) });
   }
 
+  // 建立回合状态。prompt() 与 pi 自行发起的回合（扩展 triggerTurn，如子代理完成通知）共用。
+  beginTurn(session, steering, fileReportRequest) {
+    this.onForegroundState?.(session, 'running');
+    let resolve;
+    const completed = new Promise(done => { resolve = done; });
+    const turn = { completed, pending: 0, starts: 0, settled: false,
+      cancelled: false, error: null, stopReason: 'end_turn', usage: Promise.resolve(),
+      fileReportRequest, changedPaths: new Set() };
+    if (fileReportRequest) turn.filesBefore = fileSnapshot(session.cwd);
+    turn.finish = () => {
+      if (session.turn !== turn || !turn.settled || turn.pending || turn.finishing) return;
+      const complete = () => {
+        this.interactions.cancel(session, { keepAcceptedUrls: true });
+        session.turn = null;
+        if (steering && turn.error && !turn.cancelled) {
+          this.update(session, { sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: `\n${t('executionFailed', { error: turn.error.message })}\n` } });
+        }
+        resolve();
+      };
+      if (!turn.filesBefore || turn.cancelled || turn.error) return complete();
+      turn.finishing = true;
+      turn.filesBefore.then(async before => {
+        const after = await fileSnapshot(session.cwd);
+        for (const path of changedFiles(before, after)) turn.changedPaths.add(path);
+        turn.filesIncomplete = before.incomplete || after.incomplete;
+      }).catch(() => { turn.filesIncomplete = true; }).finally(complete);
+    };
+    turn.settle = () => { turn.settled = true; turn.finish(); };
+    session.turn = turn;
+    const task = this.tasks.tasks.get(session.taskId);
+    if (task && task.state !== 'running') {
+      task.state = 'running';
+      task.output = '';
+      task.error = undefined;
+      task.truncated = false;
+      turn.taskWrite = this.tasks.save(this.sessions.get(task.owner), task);
+      task.completion = turn.completed.then(() => this.tasks.finish(task,
+        turn.cancelled ? 'stopped' : turn.error ? 'failed' : 'completed', turn.error));
+      task.completion.catch(error => logError('saveTaskFailed')(error));
+    }
+    return turn;
+  }
+
   async prompt(session, prompt, steering, fileReportRequest) {
     const created = !session.turn;
-    if (created) {
-      this.onForegroundState?.(session, 'running');
-      let resolve;
-      const completed = new Promise(done => { resolve = done; });
-      const turn = { completed, pending: 0, starts: 0, settled: false,
-        cancelled: false, error: null, stopReason: 'end_turn', usage: Promise.resolve(),
-        fileReportRequest, changedPaths: new Set() };
-      if (fileReportRequest) turn.filesBefore = fileSnapshot(session.cwd);
-      turn.finish = () => {
-        if (session.turn !== turn || !turn.settled || turn.pending || turn.finishing) return;
-        const complete = () => {
-          this.interactions.cancel(session, { keepAcceptedUrls: true });
-          session.turn = null;
-          if (steering && turn.error && !turn.cancelled) {
-            this.update(session, { sessionUpdate: 'agent_message_chunk',
-              content: { type: 'text', text: `\n${t('executionFailed', { error: turn.error.message })}\n` } });
-          }
-          resolve();
-        };
-        if (!turn.filesBefore || turn.cancelled || turn.error) return complete();
-        turn.finishing = true;
-        turn.filesBefore.then(async before => {
-          const after = await fileSnapshot(session.cwd);
-          for (const path of changedFiles(before, after)) turn.changedPaths.add(path);
-          turn.filesIncomplete = before.incomplete || after.incomplete;
-        }).catch(() => { turn.filesIncomplete = true; }).finally(complete);
-      };
-      turn.settle = () => { turn.settled = true; turn.finish(); };
-      session.turn = turn;
-      const task = this.tasks.tasks.get(session.taskId);
-      if (task && task.state !== 'running') {
-        task.state = 'running';
-        task.output = '';
-        task.error = undefined;
-        task.truncated = false;
-        turn.taskWrite = this.tasks.save(this.sessions.get(task.owner), task);
-        task.completion = turn.completed.then(() => this.tasks.finish(task,
-          turn.cancelled ? 'stopped' : turn.error ? 'failed' : 'completed', turn.error));
-        task.completion.catch(error => logError('saveTaskFailed')(error));
-      }
-    }
+    if (created) this.beginTurn(session, steering, fileReportRequest);
     const turn = session.turn;
     turn.pending++;
     // 串行提交，避免前一条提示尚在预处理时再次启动运行。
@@ -845,6 +851,12 @@ export class Agent {
         this.interactions.cancel(session);
       });
       return;
+    }
+    if (!session.turn && event.type === 'agent_start' && !session.parentId) {
+      // 没有等待中的 session/prompt：回合由 pi 内部扩展发起，补建回合以转发输出并报告空闲。
+      const turn = this.beginTurn(session, true);
+      turn.completed.then(() => this.onForegroundState?.(session, 'idle',
+        { stopReason: turn.cancelled ? 'cancelled' : turn.error ? 'error' : turn.stopReason }));
     }
     if (!session.turn) return;
     switch (event.type) {
