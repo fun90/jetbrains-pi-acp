@@ -11,7 +11,7 @@ Requires **Node.js 22.19.0+** and a JetBrains IDE with ACP support, such as Inte
 1. Sign in to your model provider from a terminal:
 
    ```bash
-   npx --yes jetbrains-pi-acp@0.1.7 --setup
+   npx --yes jetbrains-pi-acp@0.1.8 --setup
    ```
 
    In pi, run `/login`, complete sign-in, then exit pi and return to the IDE. Credentials are managed by pi.
@@ -23,7 +23,7 @@ Requires **Node.js 22.19.0+** and a JetBrains IDE with ACP support, such as Inte
      "agent_servers": {
        "pi": {
          "command": "npx",
-         "args": ["--yes", "jetbrains-pi-acp@0.1.7"],
+         "args": ["--yes", "jetbrains-pi-acp@0.1.8"],
          "use_idea_mcp": true,
          "use_custom_mcp": true
        }
@@ -52,7 +52,7 @@ The IDE must be able to find `npx`; use its absolute path if needed. Menu locati
 Append pi options after `--` in the agent's `args`, for example:
 
 ```json
-["--yes", "jetbrains-pi-acp@0.1.7", "--", "--model", "provider/model-id", "--thinking", "medium"]
+["--yes", "jetbrains-pi-acp@0.1.8", "--", "--model", "provider/model-id", "--thinking", "medium"]
 ```
 
 Use configuration options here, not initial prompts, interactive mode, or session-selection arguments. The adapter manages RPC mode and sessions.
