@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { lstat, opendir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { fileText } from './file-diff.js';
 import { promisify } from 'node:util';
 
 const executeFile = promisify(execFile);
@@ -56,4 +57,31 @@ export function changedFiles(before, after) {
     if (before.files.get(path) !== after.files.get(path)) paths.push(path);
   }
   return paths;
+}
+
+// shortcut: 仅缓存 ≤64 KiB 的文本文件，总量 8 MiB、耗时 2 秒，用于给 bash 改动补 diff；更大的文件只报路径。
+export async function snapshotTexts(snapshot) {
+  const texts = new Map();
+  const deadline = Date.now() + 2000;
+  let total = 0;
+  for (const [path, stamp] of snapshot.files) {
+    if (Date.now() > deadline || total > 8 * 1024 * 1024) break;
+    if (Number(stamp.split(':')[2]) > 64 * 1024) continue;
+    const text = await fileText(path);
+    if (typeof text === 'string') { texts.set(path, text); total += text.length; }
+  }
+  return texts;
+}
+
+// 为 edit/write 之外变更的文本文件生成整文件 diff，最多 20 个。
+export async function bashDiffs(before, paths, skip) {
+  const diffs = [];
+  for (const path of paths) {
+    if (skip.has(path) || diffs.length >= 20) continue;
+    const oldText = before.files.has(path) ? before.texts?.get(path) : before.incomplete ? undefined : null;
+    const newText = await fileText(path);
+    if (oldText === undefined || newText === undefined || oldText === newText) continue;
+    diffs.push({ type: 'diff', path, oldText, newText: newText ?? '' });
+  }
+  return diffs;
 }

@@ -14,7 +14,7 @@ import { SessionIndex } from './session-index.js';
 import { SessionFork } from './session-fork.js';
 import { Commands } from './commands.js';
 import { convertMcp, convertPrompt } from './convert.js';
-import { changedFiles, fileSnapshot } from './file-changes.js';
+import { bashDiffs, changedFiles, fileSnapshot, snapshotTexts } from './file-changes.js';
 import { air, invalid, logError, modelKey, requireCwd, requireId, restrictedModes } from './shared.js';
 import { t } from './i18n.js';
 
@@ -343,8 +343,9 @@ export class Agent {
     const completed = new Promise(done => { resolve = done; });
     const turn = { completed, pending: 0, starts: 0, settled: false,
       cancelled: false, error: null, stopReason: 'end_turn', usage: Promise.resolve(),
-      fileReportRequest, changedPaths: new Set() };
-    if (fileReportRequest) turn.filesBefore = fileSnapshot(session.cwd);
+      fileReportRequest, changedPaths: new Set(), editedPaths: new Set() };
+    if (fileReportRequest) turn.filesBefore = fileSnapshot(session.cwd)
+      .then(async snapshot => ({ ...snapshot, texts: await snapshotTexts(snapshot).catch(() => undefined) }));
     turn.finish = () => {
       if (session.turn !== turn || !turn.settled || turn.pending || turn.finishing) return;
       const complete = () => {
@@ -362,6 +363,10 @@ export class Agent {
         const after = await fileSnapshot(session.cwd);
         for (const path of changedFiles(before, after)) turn.changedPaths.add(path);
         turn.filesIncomplete = before.incomplete || after.incomplete;
+        const diffs = await bashDiffs(before, changedFiles(before, after), turn.editedPaths);
+        if (diffs.length) this.update(session, { sessionUpdate: 'tool_call', toolCallId: `acp-files-${randomUUID()}`,
+          title: t('changedFilesTitle'), kind: 'edit', status: 'completed', content: diffs,
+          locations: diffs.map(({ path }) => ({ path })) });
       }).catch(() => { turn.filesIncomplete = true; }).finally(complete);
     };
     turn.settle = () => { turn.settled = true; turn.finish(); };

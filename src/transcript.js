@@ -109,7 +109,10 @@ export class Transcript {
     }
     const tool = session.tools.get(event.toolCallId);
     if (end && !event.isError && ['edit', 'write'].includes(tool?.title) &&
-        tool.locations?.[0]?.path) session.turn.changedPaths?.add(tool.locations[0].path);
+        tool.locations?.[0]?.path) {
+      session.turn.changedPaths?.add(tool.locations[0].path);
+      session.turn.editedPaths?.add(tool.locations[0].path);
+    }
     this.agent.update(session, { sessionUpdate: 'tool_call_update', toolCallId: event.toolCallId,
       status: !end ? 'in_progress' : event.isError ? 'failed' : 'completed',
       ...this.toolResult(session, event.toolCallId, event.result ?? event.partialResult, event.isError || !end, end) });

@@ -203,3 +203,28 @@ test('文件报告覆盖命令、MCP、失败工具副作用及扩展命令，�
   assert.equal(report().status, 'reported');
   assert.deepEqual(report().paths, [join(cwd, 'extension')]);
 });
+
+test('bashDiffs 为 bash 改动的小文本文件生成 diff，并跳过 edit/write 已覆盖的路径', async () => {
+  const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { bashDiffs, snapshotTexts } = await import('../src/file-changes.js');
+  const dir = await mkdtemp(join(tmpdir(), 'bash-diff-'));
+  try {
+    const a = join(dir, 'a.txt');
+    const b = join(dir, 'b.txt');
+    await writeFile(a, 'one\n');
+    await writeFile(b, 'x\n');
+    const before = await fileSnapshot(dir);
+    before.texts = await snapshotTexts(before);
+    await writeFile(a, 'two\n');
+    await writeFile(b, 'y\n');
+    const c = join(dir, 'c.txt');
+    await writeFile(c, 'new\n');
+    const diffs = await bashDiffs(before, [a, b, c], new Set([b]));
+    assert.deepEqual(diffs, [
+      { type: 'diff', path: a, oldText: 'one\n', newText: 'two\n' },
+      { type: 'diff', path: c, oldText: null, newText: 'new\n' },
+    ]);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

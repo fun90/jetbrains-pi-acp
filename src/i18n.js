@@ -107,6 +107,7 @@ const zh = {
   goalObjectiveInvalid: 'goal objective 无效',
   noGoalSet: '当前没有 goal',
   fileReportUncertainty: '包含内置 edit/write 报告及工作目录前后快照的文件变化（含命令、MCP、扩展）；不扫描 .git 和符号链接目标。无法区分外部并发修改，可能遗漏修改后恢复、目录外及轮次结束后的后台修改。',
+  changedFilesTitle: '其他文件变更',
   fileReportIncomplete: ' 快照扫描未完成（读取失败或超过 20000 项／2 秒限制），新增和删除可能漏报。',
   compactingContext: '压缩对话上下文',
 
@@ -322,6 +323,7 @@ const en = {
   goalObjectiveInvalid: 'Invalid goal objective',
   noGoalSet: 'No goal is set',
   fileReportUncertainty: 'Includes file changes reported by built-in edit/write and from before/after snapshots of the working directory (including commands, MCP, and extensions); .git and symlink targets are not scanned. Concurrent external changes cannot be distinguished, and changes that were reverted, made outside the directory, or made by background work after the turn may be missed.',
+  changedFilesTitle: 'Other file changes',
   fileReportIncomplete: ' The snapshot scan did not finish (read failure or the 20000-entry / 2-second limit), so additions and deletions may be missing.',
   compactingContext: 'Compacting conversation context',
 
