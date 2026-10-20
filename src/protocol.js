@@ -6,6 +6,8 @@ import { invalid } from './shared.js';
 import { t } from './i18n.js';
 
 const options = values => values.map(({ id, ...option }) => ({ configId: id, ...option }));
+const commands = values => values.map(command => ({ ...command,
+  ...(command.input ? { input: { ...command.input, type: 'text' } } : {}) }));
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const failure = error => ({ code: Number.isInteger(error.code) ? error.code : -32603, message: error.message });
 
@@ -255,10 +257,12 @@ export class ProtocolAgent {
         } });
       } else if (record.result?.configOptions) {
         const { models, modes, ...result } = record.result;
-        this.send({ ...record, result: { ...result, configOptions: options(result.configOptions) } });
-        if (['session/new', 'session/resume', 'session/fork'].includes(request?.method)) {
-          this.state(result.sessionId ?? request.sessionId, 'idle');
-        }
+        const setup = ['session/new', 'session/resume', 'session/fork'].includes(request?.method);
+        const sessionId = result.sessionId ?? request?.sessionId;
+        const availableCommands = setup ? this.agent.sessions.get(sessionId)?.availableCommands : undefined;
+        this.send({ ...record, result: { ...result, configOptions: options(result.configOptions),
+          ...(availableCommands ? { availableCommands: commands(availableCommands) } : {}) } });
+        if (setup) this.state(sessionId, 'idle');
       } else this.send(record);
       if (record.result && ['session/close', 'session/delete'].includes(request?.method)) this.states.delete(request.sessionId);
       return;
@@ -288,8 +292,7 @@ export class ProtocolAgent {
     if (update.sessionUpdate === 'current_mode_update') return;
     if (update.sessionUpdate === 'config_option_update') update = { ...update, configOptions: options(update.configOptions) };
     if (update.sessionUpdate === 'available_commands_update') update = { ...update,
-      availableCommands: update.availableCommands.map(command => ({ ...command,
-        ...(command.input ? { input: { ...command.input, type: 'text' } } : {}) })) };
+      availableCommands: commands(update.availableCommands) };
     if (update.sessionUpdate === 'plan') update = { sessionUpdate: 'plan_update',
       plan: { type: 'items', planId: 'pi-plan', entries: update.entries } };
     if (['user_message_chunk', 'agent_message_chunk', 'agent_thought_chunk'].includes(update.sessionUpdate)) {

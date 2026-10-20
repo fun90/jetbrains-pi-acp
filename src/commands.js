@@ -22,6 +22,8 @@ export function treeOptions(tree, leafId) {
 }
 
 // 适配器自己实现的斜杠命令，以及发布给客户端的命令列表。
+const MAX_GOAL_TURNS = 20;
+
 export class Commands {
   constructor(agent) {
     this.agent = agent;
@@ -43,6 +45,31 @@ export class Commands {
     return true;
   }
 
+  async settleGoal(session) {
+    const turn = session.turn;
+    const goal = session.goal;
+    if (!turn.pursueGoal || turn.cancelled || turn.error || turn.stopReason !== 'end_turn' ||
+        goal?.status !== 'active' || goal.createdAt !== turn.goalCreatedAt) return turn.settle();
+    turn.pending++;
+    try {
+      if (++turn.goalRounds >= MAX_GOAL_TURNS) {
+        await this.agent.goalSession({ sessionId: session.id, action: 'pause' });
+        this.agent.update(session, { sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: t('goalTurnLimit', { turns: turn.goalRounds }) } });
+        turn.settle();
+      } else {
+        const accepted = await session.pi.request('prompt', { message: t('goalContinue', goal) });
+        if (accepted?.disposition === 'handled') turn.settle();
+      }
+    } catch (error) {
+      turn.error = error;
+      turn.settle();
+    } finally {
+      turn.pending--;
+      turn.finish();
+    }
+  }
+
   async run(session, text, fileReportRequest) {
     const finish = result => {
       if (fileReportRequest) this.agent.sendFileReport(session, { fileReportRequest, changedPaths: new Set(), starts: 0,
@@ -59,6 +86,8 @@ export class Commands {
           ...(['pause', 'resume', 'clear'].includes(argument)
             ? { action: argument } : { action: 'set', objective: argument }),
         }));
+        // 设置或恢复后立即开工，否则 Air 面板显示 Running 而没有任何模型轮次在跑。
+        if (session.goal?.status === 'active') return this.agent.prompt(session, { message: t('goalKickoff', session.goal) }, false, fileReportRequest, true);
       }
       return finish({ stopReason: 'end_turn' });
     }
@@ -160,7 +189,7 @@ export class Commands {
     }
   }
 
-  async publish(session) {
+  async publish(session, notify = true) {
     const result = await session.pi.request('get_commands');
     const availableCommands = new Map([
       ['status', { name: 'status', description: t('cmdStatus'), input: null }],
@@ -181,7 +210,8 @@ export class Commands {
       availableCommands.set(command.name, { name: command.name,
         description: command.description || command.name, input: null });
     }
-    this.agent.update(session, { sessionUpdate: 'available_commands_update',
-      availableCommands: [...availableCommands.values()] });
+    session.availableCommands = [...availableCommands.values()];
+    if (notify) this.agent.update(session, { sessionUpdate: 'available_commands_update',
+      availableCommands: session.availableCommands });
   }
 }

@@ -121,7 +121,9 @@ export default function (pi: any) {
   const mutations = new Map<string, { path: string; conflicted: boolean; oldText?: string | null }>();
   let planMode = false;
   let goal: { status: string; objective: string } | null = null;
+  let runningGoal: typeof goal = null;
   pi.on('before_agent_start', (event: any) => {
+    runningGoal = goal;
     const sections = { ...event.systemPromptOptions.sections };
     delete sections.acp_client_instructions;
     delete sections.acp_plan_mode;
@@ -130,7 +132,7 @@ export default function (pi: any) {
       ...sections,
       ...(config.customInstructions ? { acp_client_instructions: config.customInstructions } : {}),
       ...(planMode ? { acp_plan_mode: 'Only analyze the problem and produce an actionable plan. Do not modify files, run commands, or use other tools with side effects.' } : {}),
-      ...(goal?.status === 'active' ? { acp_goal: `Long-term goal for this session: ${goal.objective}` } : {}),
+      ...(goal?.status === 'active' ? { acp_goal: `Long-term goal for this session: ${goal.objective}\nKeep working until the goal is fully achieved and verified, then call the goal_complete tool. Do not call it before that.` } : {}),
     };
   });
   pi.registerCommand('__acp_mode', {
@@ -158,6 +160,18 @@ export default function (pi: any) {
           !['active', 'paused'].includes(value.status))) throw new Error(t('goalInvalid'));
       pi.appendEntry('acp_goal', value);
       goal = value;
+    },
+  });
+  pi.registerTool({
+    name: 'goal_complete', label: t('goalCompleteLabel'),
+    description: 'Mark the current long-term goal as achieved. Call only when the goal is fully done and verified.',
+    parameters: Type.Object({ summary: Type.String({ maxLength: 10000 }) }),
+    execute: async (_id: string, input: any, _signal: AbortSignal, _update: any, ctx: any) => {
+      if (goal?.status !== 'active' || goal !== runningGoal) throw new Error(t('noGoalSet'));
+      pi.appendEntry('acp_goal', null);
+      goal = null;
+      ctx.ui.notify(`PI_ACP_GOAL:null`, 'info');
+      return { content: [{ type: 'text', text: 'Goal completed' }], details: { summary: input.summary } };
     },
   });
   pi.registerTool({

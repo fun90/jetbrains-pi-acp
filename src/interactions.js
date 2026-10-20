@@ -100,6 +100,11 @@ export class Interactions {
       notifyHandlers[prefix](this.agent, session, message.slice(prefix.length));
       return;
     }
+    // RPC 扩展命令（如 /mcp）通过 notify 返回文字，需作为本轮回复展示。
+    if (message && session.turn?.extensionCommand && !session.turn.cancelled && !session.turn.settled && !session.turn.starts) {
+      this.agent.update(session, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `${message}\n` } });
+      return;
+    }
     const notices = this.agent.clientCapabilities?.session?.notices;
     if (notices && typeof notices === 'object' && !Array.isArray(notices)) {
       this.agent.update(session, { sessionUpdate: 'notice',

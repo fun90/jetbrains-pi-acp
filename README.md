@@ -37,6 +37,7 @@ The IDE must be able to find `npx`; use its absolute path if needed. Menu locati
 
 ## Features
 
+- `/goal <objective>` and `/goal resume` continue automatically until the model verifies completion and calls `goal_complete` to clear the goal. After 20 unfinished rounds, execution pauses; use `/goal resume` to continue. Stop cancels execution; `/goal pause` or pausing in the Air goal panel prevents further rounds. Completion is judged by the executing model, without an independent auditor. Setting or resuming a goal in the Air panel only updates its state; send `/goal resume` to start execution.
 - ACP v1 and v2 draft support, with streaming responses, reasoning, tool status, terminal output, and usage reporting.
 - Native pi session history: list, load, resume, rename, fork, and delete sessions. Use `/tree` to view the session tree in a selection form and switch context while preserving previous branches. Selecting a user message returns to before it was sent and shows the original text for resending (reattach any attachments). Switching does not revert files, remove existing IDE messages, or generate a branch summary. Clients without form support only display the tree.
 - Model and reasoning-level selection, plus full-access, standard, read-only, and plan modes.
@@ -72,6 +73,7 @@ Restart the agent connection after updating the adapter or changing startup opti
 - Only commands the model runs with `interactive: true` accept input. Other commands get an empty stdin (`/dev/null`) like native pi, so commands that read stdin by mistake exit instead of hanging.
 - Diffs have size limits and may be unavailable for binary files or older history. File reports scan at most 20,000 entries or two seconds per snapshot and cannot reliably attribute concurrent external changes.
 - MCP SSE, audio, and binary embedded resources are unsupported. Image support depends on the model.
+- RPC does not support custom terminal panels from extensions. With `pi-mcp-adapter`, `/mcp` falls back to text status, and command notifications appear in chat; these notifications are not saved in pi session history.
 - ACP v2 follows a draft schema. Client UI behavior, real provider sign-in, and Windows hardware still need verification.
 
 ## Development

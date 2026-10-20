@@ -385,10 +385,12 @@ export class Agent {
     return turn;
   }
 
-  async prompt(session, prompt, steering, fileReportRequest) {
+  async prompt(session, prompt, steering, fileReportRequest, pursueGoal = false) {
     const created = !session.turn;
     if (created) this.beginTurn(session, steering, fileReportRequest);
     const turn = session.turn;
+    if (created) turn.extensionCommand = /^\/\S/.test(prompt.message);
+    if (pursueGoal) Object.assign(turn, { pursueGoal: true, goalCreatedAt: session.goal.createdAt, goalRounds: 0 });
     turn.pending++;
     // 串行提交，避免前一条提示尚在预处理时再次启动运行。
     const submission = (turn.submission ?? Promise.resolve()).catch(() => {}).then(async () => {
@@ -633,10 +635,10 @@ export class Agent {
     await this.sendUsage(session, await session.pi.request('get_session_stats'));
   }
 
-  // 会话就绪后发布可用命令与用量；失败只记录日志。
+  // v2 初始命令随响应返回，v1 通过通知发布；失败只记录日志。
   async publishSession(session) {
     await Promise.all([
-      this.commands.publish(session).catch(logError('publishCommandsFailed')),
+      this.commands.publish(session, this.protocolVersion !== 2).catch(logError('publishCommandsFailed')),
       this.refreshUsage(session).catch(logError('refreshUsageFailed')),
     ]);
   }
@@ -915,7 +917,7 @@ export class Agent {
       case 'agent_settled':
         if (event.aborted) session.turn.cancelled = true;
         session.turn.usage = this.refreshUsage(session).catch(logError('refreshUsageFailed'));
-        session.turn.settle();
+        void this.commands.settleGoal(session);
         break;
     }
   }

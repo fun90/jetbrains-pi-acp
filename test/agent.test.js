@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { readJsonl, writeJsonl } from '../src/jsonl.js';
 import { Agent } from '../src/agent.js';
+import { Commands } from '../src/commands.js';
 import { t as msg } from '../src/i18n.js';
 import { convertMcp, convertPrompt } from '../src/convert.js';
 
@@ -360,6 +361,13 @@ test('本机 pi 自动命名、扩展改名及 steering（显式启用，使用�
           api: model.api, provider: model.provider, model: model.id, stopReason: 'stop', timestamp: Date.now(),
           usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+        if (goalSection?.includes('完成工具验收') && !context.messages.some((message: any) => message.role === 'toolResult' && message.toolName === 'goal_complete')) {
+          message.content = [{ type: 'toolCall', id: 'goal-done', name: 'goal_complete', arguments: { summary: '已验证' } }] as any;
+          message.stopReason = 'toolUse';
+          stream.push({ type: 'done', reason: 'toolUse', message });
+          stream.end();
+          return stream;
+        }
         if (text === '等待引导已开始') {
           stream.push({ type: 'start', partial: message });
           stream.push({ type: 'text_delta', contentIndex: 0, delta: text, partial: message });
@@ -444,6 +452,13 @@ test('本机 pi 自动命名、扩展改名及 steering（显式启用，使用�
   const restoredGoal = await c.wait(record => record.params?.sessionId === sid &&
     record.params.update._meta?.jetbrains?.air?.goal?.objective === '真实目标\n保留多行');
   assert.equal(restoredGoal.params.update._meta.jetbrains.air.goal.status, 'active');
+  const goalStart = c.records.length;
+  assert.equal((await c.request('session/prompt', { sessionId: sid,
+    prompt: [{ type: 'text', text: '/goal 完成工具验收' }] })).result.stopReason, 'end_turn');
+  const goalRecords = c.records.slice(goalStart);
+  assert.ok(goalRecords.some(record => record.params?.update?._meta?.jetbrains?.air?.goal === null));
+  assert.ok(goalRecords.some(record => record.params?.update?.rawInput?.summary === '已验证'));
+
 });
 
 for (const option of ['allow-once', 'reject-once', 'cancel']) {
@@ -715,6 +730,12 @@ test('Air goal 支持设置、暂停、恢复和清除', async t => {
   assert.equal(cleared.params.update._meta.jetbrains.air.goal, null);
   assert.equal((await c.request('session/prompt', { sessionId: sid,
     prompt: [{ type: 'text', text: '/goal 多行目标\n保留换行' }] })).result.stopReason, 'end_turn');
+  // pi 替身从不调用 goal_complete，应连续运行到上限后暂停。
+  const answers = c.records.filter(record => record.params?.update?.sessionUpdate === 'agent_message_chunk' &&
+    record.params.update.content.text.startsWith('你好'));
+  assert.equal(answers.length, 20);
+  assert.equal(c.records.findLast(record => record.params?.update?._meta?.jetbrains?.air?.goal)
+    .params.update._meta.jetbrains.air.goal.status, 'paused');
   const multiline = c.records.findLast(record => record.params?.update?._meta?.jetbrains?.air?.goal)
     .params.update._meta.jetbrains.air.goal;
   assert.equal(multiline.objective, '多行目标\n保留换行');
@@ -930,6 +951,53 @@ test('扩展通知仅在 notice 能力协商后发送', async () => {
   agent.clientCapabilities = { session: { notices: {} } };
   await agent.interactions.handle(session, { method: 'notify', message: '需要注意', notifyType: 'warning' });
   assert.deepEqual(updates[0], { sessionUpdate: 'notice', severity: 'warning', title: '需要注意' });
+});
+
+test('扩展命令通知作为回复且不重复发送，普通轮次和取消后保留 notice 行为', async () => {
+  for (const notices of [undefined, {}]) {
+    const updates = [];
+    const agent = new Agent({ send: record => updates.push(record.params.update) });
+    agent.clientCapabilities = { session: { notices } };
+    const session = { id: 'command', turn: { extensionCommand: true, starts: 0 } };
+    for (const message of ['MCP Server Status:', 'ide: connected']) {
+      await agent.interactions.handle(session, { method: 'notify', message });
+    }
+    assert.deepEqual(updates.map(update => update.content?.text), ['MCP Server Status:\n', 'ide: connected\n']);
+    await agent.interactions.handle(session, { method: 'notify', message: 'PI_ACP_READY' });
+    assert.equal(session.ready, true);
+    assert.equal(updates.length, 2);
+    for (const turn of [{ cancelled: true }, { settled: true }, { starts: 1 }, { extensionCommand: false }]) {
+      Object.assign(session.turn, { extensionCommand: true, starts: 0, cancelled: false, settled: false }, turn);
+      const before = updates.length;
+      await agent.interactions.handle(session, { method: 'notify', message: '后台通知' });
+      assert.equal(updates.length, before + (notices ? 1 : 0));
+      if (notices) assert.equal(updates.at(-1).sessionUpdate, 'notice');
+    }
+  }
+});
+
+test('本机 pi 的 /mcp 文字通知在 ACP 命令结束前可见', { skip: !process.env.PI_ACP_SMOKE }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'pi-acp-mcp-command-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const extension = join(directory, 'mcp.ts');
+  await writeFile(extension, `export default function (pi: any) {
+    pi.registerCommand('mcp', { description: 'MCP 状态替身', handler: async (_args: string, ctx: any) => {
+      ctx.ui.notify('MCP Server Status:', 'info');
+      ctx.ui.notify('ide: connected', 'info');
+    } });
+  }`);
+  const c = await client(t, true, directory, ['--extension', extension, '--session-dir', directory]);
+  const sid = await session(c);
+  const result = await c.request('session/prompt', { sessionId: sid, prompt: [{ type: 'text', text: '/mcp' }] });
+  assert.equal(result.result?.stopReason, 'end_turn', JSON.stringify(result));
+  const output = c.records.filter(record => record.params?.sessionId === sid &&
+    record.params.update.sessionUpdate === 'agent_message_chunk').map(record => record.params.update.content.text).join('');
+  assert.equal(output, 'MCP Server Status:\nide: connected\n');
+  const responseIndex = c.records.indexOf(result);
+  for (const record of c.records.filter(record => record.params?.sessionId === sid &&
+    record.params.update.sessionUpdate === 'agent_message_chunk')) {
+    assert.ok(c.records.indexOf(record) < responseIndex, '命令输出必须先于 prompt 响应');
+  }
 });
 
 test('未协商时忽略自定义指令，协商后校验并传给 pi 扩展', async t => {
@@ -1230,8 +1298,8 @@ test('ACP v2 提示确认、排队取消、状态更新和稳定消息回放', a
   const sid = created.result.sessionId;
   assert.ok(created.result.configOptions.every(option => option.configId && !('id' in option)));
   assert.ok(!('models' in created.result) && !('modes' in created.result));
-  const commands = c.records.find(record => record.params?.sessionId === sid &&
-    record.params.update.sessionUpdate === 'available_commands_update').params.update.availableCommands;
+  const commands = created.result.availableCommands;
+  assert.ok(!c.records.some(record => record.params?.update?.sessionUpdate === 'available_commands_update'));
   assert.deepEqual(commands.find(command => command.name === 'compact').input,
     { type: 'text', hint: msg('cmdCompactHint') });
   assert.ok(commands.filter(command => command.input).every(command => command.input.type === 'text'));
@@ -1257,6 +1325,7 @@ test('ACP v2 提示确认、排队取消、状态更新和稳定消息回放', a
   const start = c.records.length;
   const resumed = await c.request('session/resume', { sessionId: sid, cwd: root, replayFrom: { type: 'start' } });
   assert.ok(resumed.result?.configOptions, JSON.stringify(resumed));
+  assert.deepEqual(resumed.result.availableCommands, commands);
   const replayed = c.records.slice(start).filter(record => record.params?.sessionId === sid).map(record => record.params.update);
   assert.ok(replayed.some(update => update.sessionUpdate === 'user_message' && update.messageId === next.result.messageId));
   assert.ok(replayed.some(update => update.sessionUpdate === 'agent_message_chunk' && update.messageId === answer.messageId));
@@ -1265,6 +1334,34 @@ test('ACP v2 提示确认、排队取消、状态更新和稳定消息回放', a
   assert.equal(changed.result.configOptions[0].currentValue, 'other/first');
   assert.equal((await c.request('session/set_config_option', { sessionId: sid, configId: 'model', value: 'test/first' })).error.code, -32602);
   assert.equal((await c.request('session/load', { sessionId: sid, cwd: root })).error.code, -32601);
+});
+
+test('ACP v2 初始命令随创建、恢复和分叉响应返回，重载仍通知', async t => {
+  const c = await client(t);
+  await c.request('initialize', { protocolVersion: 2, info: { name: 'commands-v2', version: '1' } });
+  const created = await c.request('session/new', { cwd: root });
+  const sid = created.result.sessionId;
+  const commands = created.result.availableCommands;
+  assert.ok(commands.some(command => command.name === 'status'));
+  for (const replay of [{}, { replayFrom: null }, { replayFrom: { type: 'start' } }]) {
+    const resumed = await c.request('session/resume', { sessionId: sid, cwd: root, ...replay });
+    assert.deepEqual(resumed.result.availableCommands, commands);
+  }
+  await c.request('session/prompt', { sessionId: sid, prompt: [{ type: 'text', text: '保存分叉源' }] });
+  await c.wait(record => record.params?.sessionId === sid && record.params.update?.state === 'idle' &&
+    record.params.update.stopReason === 'end_turn');
+  const forked = await c.request('session/fork', { sessionId: sid, cwd: root });
+  assert.ok(forked.result, JSON.stringify(forked));
+  assert.notEqual(forked.result.sessionId, sid);
+  assert.deepEqual(forked.result.availableCommands, commands);
+  await c.request('session/close', { sessionId: sid });
+  const resumed = await c.request('session/resume', { sessionId: sid, cwd: root });
+  assert.deepEqual(resumed.result.availableCommands, commands);
+  assert.ok(!c.records.some(record => record.params?.update?.sessionUpdate === 'available_commands_update'));
+  await c.request('session/prompt', { sessionId: sid, prompt: [{ type: 'text', text: '/reload' }] });
+  const updated = await c.wait(record => record.params?.sessionId === sid &&
+    record.params.update?.sessionUpdate === 'available_commands_update');
+  assert.deepEqual(updated.params.update.availableCommands, commands);
 });
 
 test('ACP v2 授权使用 subject 并围绕等待发送状态', async t => {
@@ -1574,7 +1671,7 @@ test('本机 pi /tree 切换分支、用户消息和目标，取消时保留历�
   const switched = await choose('g1');
   assert.ok(switched.some(record => record.params?.update?._meta?.jetbrains?.air?.goal?.objective === '旧目标'));
   assert.deepEqual(await replay(), ['第一轮', '第一轮回答']);
-  await c.request('session/prompt', { sessionId: sid, prompt: [{ type: 'text', text: '/goal 分支目标' }] });
+  await c.request('_session/goal', { sessionId: sid, action: 'set', objective: '分支目标' });
   await choose('g2');
   assert.deepEqual(await replay(), ['第一轮', '第一轮回答', '第二轮', '第二轮回答']);
   for (const action of ['cancel', 'cancel-session']) {
@@ -1585,7 +1682,7 @@ test('本机 pi /tree 切换分支、用户消息和目标，取消时保留历�
   assert.ok(reset.some(record => record.params?.update?.content?.text?.includes(msg('treeResend'))));
   assert.ok(reset.some(record => record.params?.update?._meta?.jetbrains?.air?.goal === null));
   assert.deepEqual(await replay(), []);
-  await c.request('session/prompt', { sessionId: sid, prompt: [{ type: 'text', text: '/goal 根目标' }] });
+  await c.request('_session/goal', { sessionId: sid, action: 'set', objective: '根目标' });
   const saved = (await readFile(path, 'utf8')).trim().split('\n').map(JSON.parse);
   for (const entry of entries) assert.ok(saved.some(value => value.id === entry.id));
   assert.equal(saved.at(-1).parentId, null);
@@ -1770,7 +1867,7 @@ test('本机 pi 扩展通过事件总线发起 URL 交互并确认完成', { ski
   c.send({ jsonrpc: '2.0', id: request.id, result: { action: 'accept' } });
   const complete = await c.wait(record => record.method === 'elicitation/complete');
   assert.equal(complete.params.elicitationId, request.params.elicitationId);
-  await c.wait(record => record.params?.update?.title === 'URL 完成已确认');
+  await c.wait(record => record.params?.update?.content?.text === 'URL 完成已确认\n');
   assert.ok((await prompt).result);
   await c.request('initialize', { protocolVersion: 1, clientCapabilities: {} });
   const unsupported = await c.request('session/prompt', { sessionId: sid, prompt: [{ type: 'text', text: '/urlcheck' }] });
@@ -1870,3 +1967,21 @@ for (const version of [1, 2]) {
       assert.equal(stopped.output, '存活');
     });
 }
+
+test('目标续跑在取消、失败、暂停、清除或目标替换后停止', async () => {
+  for (const change of [
+    turn => { turn.cancelled = true; },
+    turn => { turn.error = new Error('失败'); },
+    turn => { turn.stopReason = 'max_tokens'; },
+    (_turn, session) => { session.goal.status = 'paused'; },
+    (_turn, session) => { session.goal = null; },
+    (_turn, session) => { session.goal.createdAt = 2; },
+  ]) {
+    let settled = false;
+    const turn = { pursueGoal: true, goalCreatedAt: 1, stopReason: 'end_turn', settle() { settled = true; } };
+    const session = { turn, goal: { createdAt: 1, status: 'active' } };
+    change(turn, session);
+    await new Commands({}).settleGoal(session);
+    assert.equal(settled, true);
+  }
+});
