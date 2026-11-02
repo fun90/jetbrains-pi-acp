@@ -8,6 +8,11 @@ import { t } from './i18n.js';
 
 const running = task => task.state === 'running';
 const MAX_OUTPUT = 256 * 1024;
+// IDE 任务列表行不截断长名称，会把停止链接挤出可见区域，故只发单行短名。
+export const taskLabel = text => {
+  const line = text.replace(/\s+/g, ' ').trim();
+  return line.length > 60 ? `${line.slice(0, 59)}…` : line;
+};
 
 export class Tasks {
   constructor(agent) {
@@ -207,7 +212,7 @@ export class Tasks {
         _meta: { terminal_info: { terminal_id: task.toolCallId, cwd: session.cwd },
           jetbrains: { air: { version: 1, asyncTasks: { backgrounded: true } } } } });
       this.agent.update(session, { sessionUpdate: 'async_task_spawned', asyncTaskId: task.id,
-        name: task.name, taskType: 'shell', showInTranscript: false, canStop: running(task), toolCallId: task.toolCallId });
+        name: taskLabel(task.name), taskType: 'shell', showInTranscript: false, canStop: running(task), toolCallId: task.toolCallId });
     }
     task.announced = true;
   }
@@ -350,7 +355,7 @@ export class Tasks {
           this.agent.update(session, { sessionUpdate: 'tool_call_update', toolCallId,
             _meta: { jetbrains: { air: { version: 1, asyncTasks: { backgrounded: true } } } } });
           this.agent.update(session, { sessionUpdate: 'async_task_spawned', asyncTaskId: task.id,
-            name: text, taskType: 'shell', showInTranscript: false, canStop: true, toolCallId });
+            name: taskLabel(text), taskType: 'shell', showInTranscript: false, canStop: true, toolCallId });
         }
         await this.startShell(session, task, params);
       }

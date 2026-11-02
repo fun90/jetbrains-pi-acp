@@ -8,6 +8,7 @@ const directories = [];
 test.after(async () => { for (const path of directories) await rm(path, { recursive: true, force: true }); });
 import { Agent } from '../src/agent.js';
 import { t as msg } from '../src/i18n.js';
+import { taskLabel } from '../src/tasks.js';
 
 async function setup(capabilities = {}) {
   const records = [];
@@ -351,4 +352,11 @@ test('pi 自行发起的回合（无 session/prompt）也建立回合、转发�
   await new Promise(resolve => setTimeout(resolve, 20));
   assert.equal(parent.turn, null);
   assert.deepEqual(states, ['running', 'idle']);
+});
+
+test('后台任务名压成单行短名，避免 IDE 停止按钮被挤出', () => {
+  assert.equal(taskLabel('  npm   run\n dev '), 'npm run dev');
+  const long = taskLabel('x'.repeat(200));
+  assert.equal(long.length, 60);
+  assert.ok(long.endsWith('…'));
 });
