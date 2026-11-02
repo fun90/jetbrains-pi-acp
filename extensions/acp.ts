@@ -128,8 +128,11 @@ export default function (pi: any) {
     delete sections.acp_client_instructions;
     delete sections.acp_plan_mode;
     delete sections.acp_goal;
+    delete sections.acp_links;
     event.systemPromptOptions.sections = {
       ...sections,
+      // JetBrains 的 Markdown 自动链接会把紧跟的非空白文字（如中文、全角标点）并入裸 URL
+      acp_links: 'Outside code blocks, never write a bare URL directly followed by non-whitespace text. Write links as [text](url) or <url>, or put a space after the URL.',
       ...(config.customInstructions ? { acp_client_instructions: config.customInstructions } : {}),
       ...(planMode ? { acp_plan_mode: 'Only analyze the problem and produce an actionable plan. Do not modify files, run commands, or use other tools with side effects.' } : {}),
       ...(goal?.status === 'active' ? { acp_goal: `Long-term goal for this session: ${goal.objective}\nKeep working until the goal is fully achieved and verified, then call the goal_complete tool. Do not call it before that.` } : {}),
