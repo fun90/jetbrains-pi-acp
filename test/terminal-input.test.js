@@ -76,6 +76,24 @@ test('非交互命令的 stdin 为 /dev/null：读 stdin 不卡住、不可输�
   assert.equal(terminals.processes.size, 0);
 });
 
+test('reap 在 shell 退出后清理同组残留进程，默认保留', { skip: process.platform === 'win32' }, async () => {
+  const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const orphan = async options => {
+    let output = '';
+    // 子进程关闭 stdout，模拟服务器进程；shell 随即被 SIGTERM 杀掉，复现任务以 143 结束而子进程残留。
+    const run = new TerminalProcesses().exec('orphan', shell, 'sleep 30 >/dev/null 2>&1 & echo $!; kill -TERM $$', cwd,
+      { onData: data => { output += data.toString(); }, ...options }, () => {});
+    assert.equal((await run).exitCode, 143);
+    const pid = Number(output.trim());
+    await new Promise(resolve => setTimeout(resolve, 100));
+    return pid;
+  };
+  const kept = await orphan({});
+  assert.equal(alive(kept), true);
+  process.kill(kept, 'SIGKILL');
+  assert.equal(alive(await orphan({ reap: true })), false);
+});
+
 test('无效 shell 和已取消调用均不留下进程', async () => {
   const terminals = new TerminalProcesses();
   await assert.rejects(terminals.exec('bad', { shell: '/nonexistent/pi-acp-shell', args: ['-c'] },

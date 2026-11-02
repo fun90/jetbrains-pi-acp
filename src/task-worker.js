@@ -41,7 +41,7 @@ const timer = setInterval(() => {
 for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => controller.abort());
 try {
   const { exitCode } = await processes.exec(config.taskId, config.shell, config.command, config.cwd, {
-    env: process.env, signal: controller.signal, timeout: config.timeout,
+    env: process.env, signal: controller.signal, timeout: config.timeout, reap: true,
     onData: (data, source) => output(decoders[source].write(data)),
   }, () => processes.processes.get(config.taskId)?.stdin.end());
   state.exitCode = exitCode;

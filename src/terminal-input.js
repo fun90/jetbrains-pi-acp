@@ -43,7 +43,8 @@ export class TerminalProcesses {
     for (const child of this.processes.values()) this.kill(child);
   }
 
-  async exec(terminalId, shell, command, cwd, { onData, signal, timeout, env, interactive }, ready) {
+  // reap：shell 退出后清掉同进程组的残留子进程；前台 bash 不开，保留 nohup … & 的有意脱离。
+  async exec(terminalId, shell, command, cwd, { onData, signal, timeout, env, interactive, reap }, ready) {
     if (signal?.aborted) throw new Error('aborted');
     if (timeout !== undefined && (!Number.isFinite(timeout) || timeout <= 0 || timeout * 1000 > 2147483647)) {
       throw new Error('Invalid timeout');
@@ -93,6 +94,7 @@ export class TerminalProcesses {
       clearTimeout(timer);
       signal?.removeEventListener('abort', abort);
       this.processes.delete(terminalId);
+      if (reap) this.kill(child);
     }
   }
 }
