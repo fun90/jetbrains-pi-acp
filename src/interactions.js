@@ -125,10 +125,13 @@ export class Interactions {
         content: { type: 'text', text: `\n${t('extensionUiUnsupported', { name: event.title ?? event.method })}\n` } });
       return;
     }
+    // 扩展（如 rpiv-ask-user-question）已在选项前自带 "N. " 序号，而 Air 会再加序号，故展示时去掉，回传时还原。
+    const numbered = event.method === 'select' && event.options.every(option => /^\d+\.\s/.test(option));
+    const shown = numbered ? event.options.map(option => option.replace(/^\d+\.\s+/, '')) : event.options;
     const property = event.method === 'confirm'
       ? { type: 'boolean', default: false }
       : event.method === 'select'
-        ? { type: 'string', enum: event.options }
+        ? { type: 'string', enum: shown }
         : { type: 'string', ...(event.placeholder ? { description: event.placeholder } : {}),
           ...(event.prefill !== undefined ? { default: event.prefill } : {}) };
     const result = await this.request(session, 'elicitation', 'elicitation/create', {
@@ -136,7 +139,8 @@ export class Interactions {
       message: [event.title || t('piNeedsInput'), event.message].filter(Boolean).join('\n\n'),
       requestedSchema: { type: 'object', properties: { value: property }, required: ['value'] },
     });
-    const value = result?.content?.value;
+    const raw = result?.content?.value;
+    const value = numbered && shown.includes(raw) ? event.options[shown.indexOf(raw)] : raw;
     const accepted = result?.action === 'accept' &&
       (event.method === 'confirm' ? typeof value === 'boolean'
         : typeof value === 'string' && (event.method !== 'select' || event.options.includes(value)));

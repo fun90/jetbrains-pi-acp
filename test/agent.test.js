@@ -933,10 +933,16 @@ test('扩展表单交互通过 elicitation 桥接，并保留无能力时的取�
     result: { action: 'accept', content: { value: 'B' } } });
   await rejected;
   assert.deepEqual(responses.at(-1), { type: 'extension_ui_response', id: 'ui-3', cancelled: true });
-  const confirmed = agent.interactions.handle(session, { id: 'ui-4', method: 'confirm', title: '删除？', message: '所有数据将丢失' });
+  const numbered = agent.interactions.handle(session, { id: 'ui-5', method: 'select', title: 'Q', options: ['1. 红 — r', '2. 蓝 — b'] });
   while (requests().length < 3) await new Promise(resolve => setImmediate(resolve));
-  assert.equal(requests()[2].params.message, '删除？\n\n所有数据将丢失');
-  await agent.receive({ jsonrpc: '2.0', id: requests()[2].id,
+  assert.deepEqual(requests()[2].params.requestedSchema.properties.value.enum, ['红 — r', '蓝 — b']);
+  await agent.receive({ jsonrpc: '2.0', id: requests()[2].id, result: { action: 'accept', content: { value: '蓝 — b' } } });
+  await numbered;
+  assert.deepEqual(responses.at(-1), { type: 'extension_ui_response', id: 'ui-5', value: '2. 蓝 — b' });
+  const confirmed = agent.interactions.handle(session, { id: 'ui-4', method: 'confirm', title: '删除？', message: '所有数据将丢失' });
+  while (requests().length < 4) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requests()[3].params.message, '删除？\n\n所有数据将丢失');
+  await agent.receive({ jsonrpc: '2.0', id: requests()[3].id,
     result: { action: 'accept', content: { value: false } } });
   await confirmed;
   assert.deepEqual(responses.at(-1), { type: 'extension_ui_response', id: 'ui-4', confirmed: false });
