@@ -45,6 +45,10 @@ export default function (pi: any) {
       taskRequest(action, request.toolCallId ?? '', request.params).then(request.resolve, request.reject);
     });
   }
+  // pi-agents 的子 agent 状态快照，转发给适配器作为只读异步任务展示。
+  pi.events.on('pi-agents:state', (snapshot: any) => {
+    taskRequest('agents_state', '', snapshot).catch(() => {});
+  });
   shared.saveTask = (task: any) => pi.appendEntry('acp_task', task);
   {
     pi.on('session_start', () => {

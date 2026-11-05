@@ -1843,6 +1843,46 @@ for (const version of [1, 2]) {
     });
 }
 
+for (const version of [1, 2]) {
+  test(`本机 pi ACP v${version} 转发 pi-agents 状态描述`, { skip: !process.env.PI_ACP_SMOKE }, async t => {
+    const directory = await mkdtemp(join(tmpdir(), 'pi-acp-agent-state-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const extension = join(directory, 'state.ts');
+    await writeFile(extension, `export default function (pi: any) {
+      let sequence = 0;
+      pi.registerCommand('agentstate', {
+        description: '验证子 agent 状态',
+        handler: async () => {
+          for (const state of ['working', 'waiting', 'idle']) {
+            pi.events.emit('pi-agents:state', { protocol: 1, sessionId: 'test', instanceId: 'run',
+              sequence: ++sequence, type: 'snapshot',
+              agents: [{ id: 'child', name: 'worker', state, closed: false }] });
+          }
+        },
+      });
+    }`);
+    const c = await client(t, true, directory, ['--extension', extension, '--session-dir', directory]);
+    const capabilities = { _meta: { jetbrains: { air: {
+      version: 1, capabilities: ['asyncTasks'],
+    } } } };
+    const initialized = await c.request('initialize', { protocolVersion: version,
+      ...(version === 1 ? { clientCapabilities: capabilities }
+        : { info: { name: 'state-test', version: '1' }, capabilities }) });
+    assert.equal(initialized.result.protocolVersion, version);
+    const sid = (await c.request('session/new', { cwd: directory, mcpServers: [] })).result.sessionId;
+    await c.request('session/prompt', { sessionId: sid, prompt: [{ type: 'text', text: '/agentstate' }] });
+    await c.wait(record => record.params?.update?.sessionUpdate === 'async_task_state_update' &&
+      record.params.update.asyncTaskId === 'pi-agents:child' && record.params.update.state === 'completed');
+    const updates = c.records.filter(record => record.params?.update?.asyncTaskId === 'pi-agents:child')
+      .map(record => record.params.update);
+    assert.deepEqual(updates.map(update => update.sessionUpdate), [
+      'async_task_spawned', 'async_task_progress', 'async_task_progress', 'async_task_state_update',
+    ]);
+    assert.ok(updates.slice(0, 3).every(update => typeof update.description === 'string' && update.description));
+    assert.equal(new Set(updates.slice(0, 3).map(update => update.description)).size, 3);
+  });
+}
+
 test('本机 pi 扩展通过事件总线发起 URL 交互并确认完成', { skip: !process.env.PI_ACP_SMOKE }, async t => {
   const directory = await mkdtemp(join(tmpdir(), 'pi-acp-url-'));
   t.after(() => rm(directory, { recursive: true, force: true }));

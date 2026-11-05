@@ -8,6 +8,11 @@ import { t } from './i18n.js';
 
 const running = task => task.state === 'running';
 const MAX_OUTPUT = 256 * 1024;
+// pi-agents 的 AgentState 到异步任务状态的映射；未知状态按运行中处理。
+const piAgentState = { working: 'running', waiting: 'running', idle: 'completed',
+  failed: 'failed', interrupted: 'stopped', skipped: 'stopped' };
+const piAgentDescription = { working: 'agentWorking', waiting: 'agentWaiting', idle: 'agentCompleted',
+  failed: 'agentFailed', interrupted: 'agentInterrupted', skipped: 'agentSkipped' };
 // IDE 任务列表行不截断长名称，会把停止链接挤出可见区域，故只发单行短名。
 export const taskLabel = text => {
   const line = text.replace(/\s+/g, ' ').trim();
@@ -38,6 +43,47 @@ export class Tasks {
       content: [{ type: 'content', content: { type: 'text', text: task.output } }],
     });
     return true;
+  }
+
+  // pi-agents 的子 agent 运行在 pi 进程内，不是 ACP 子会话，只能作为只读的异步任务展示。
+  // 快照在同一 instanceId 内按 sequence 递增，乱序或重复的快照直接丢弃。
+  agentsState(session, snapshot) {
+    if (!this.agent.asyncTasks || snapshot?.protocol !== 1 || !Array.isArray(snapshot.agents) ||
+        typeof snapshot.instanceId !== 'string' || !Number.isSafeInteger(snapshot.sequence) ||
+        snapshot.agents.some(info => typeof info?.id !== 'string' || typeof info.name !== 'string')) return;
+    const known = session.piAgents ??= { instanceId: undefined, sequence: 0, states: new Map() };
+    const sameInstance = known.instanceId === snapshot.instanceId;
+    if (sameInstance && snapshot.sequence <= known.sequence) return;
+    known.instanceId = snapshot.instanceId;
+    known.sequence = snapshot.sequence;
+    // stopped 只表示发布者不再持有这些 agent，不代表它们已结束，保留现有展示。
+    if (snapshot.type !== 'snapshot') return;
+    // agent_stop 会从完整快照中移除节点，可能不经过 interrupted 状态。
+    const present = new Set(snapshot.agents.map(info => info.id));
+    if (sameInstance) for (const [id, previous] of known.states) {
+      if (previous.state !== 'running' || present.has(id)) continue;
+      const asyncTaskId = `pi-agents:${id}`;
+      const description = t('agentClosed');
+      known.states.set(id, { state: 'stopped', description });
+      this.agent.update(session, { sessionUpdate: 'async_task_progress', asyncTaskId, description });
+      this.agent.update(session, { sessionUpdate: 'async_task_state_update', asyncTaskId, state: 'stopped' });
+    }
+    for (const info of snapshot.agents) {
+      const state = piAgentState[info.state] ?? 'running';
+      const final = info.closed && state === 'running' ? 'stopped' : state;
+      const description = t(info.closed && state === 'running' ? 'agentClosed'
+        : piAgentDescription[info.state] ?? 'agentWorking');
+      const asyncTaskId = `pi-agents:${info.id}`;
+      const previous = known.states.get(info.id);
+      if (previous?.state === final && previous.description === description) continue;
+      known.states.set(info.id, { state: final, description });
+      // Air 隐藏运行中的状态标签，用独立描述展示状态，避免任务列表只有名称。
+      if (previous === undefined) this.agent.update(session, { sessionUpdate: 'async_task_spawned', asyncTaskId,
+        name: taskLabel(info.name), description, taskType: 'agent', showInTranscript: false, canStop: false });
+      else this.agent.update(session, { sessionUpdate: 'async_task_progress', asyncTaskId, description });
+      if (previous?.state !== final && (previous !== undefined || final !== 'running')) this.agent.update(session, {
+        sessionUpdate: 'async_task_state_update', asyncTaskId, state: final });
+    }
   }
 
   owned(session, id) {

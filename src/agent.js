@@ -931,6 +931,12 @@ export class Agent {
         session.pi.controlResponse(request.id, result);
         return;
       }
+      // 子 agent 状态快照可能在回合之外到达，不要求有活动回合。
+      if (request.action === 'agents_state') {
+        this.tasks.agentsState(session, request.params);
+        session.pi.controlResponse(request.id, {});
+        return;
+      }
       if (!session.turn || session.turn.cancelled) throw invalid(t('noToolTurn'));
       let result;
       if (request.action === 'spawn_agent' || request.action === 'background_shell') {

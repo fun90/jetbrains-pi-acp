@@ -22,6 +22,13 @@ const zh = {
   configMode: '权限模式',
   configChanging: '配置正在切换，请稍后重试',
   subagent: '子 agent',
+  agentWorking: '运行中',
+  agentWaiting: '等待依赖',
+  agentCompleted: '已完成',
+  agentFailed: '失败',
+  agentInterrupted: '已中断',
+  agentSkipped: '已跳过',
+  agentClosed: '已关闭',
 
   // 命令行
   usage: '用法：node src/index.js [--setup] [--pi-command /绝对路径/pi] [-- pi 参数]',
@@ -248,6 +255,13 @@ const en = {
   configMode: 'Permission Mode',
   configChanging: 'Configuration is changing; try again later',
   subagent: 'Subagent',
+  agentWorking: 'Running',
+  agentWaiting: 'Waiting for dependencies',
+  agentCompleted: 'Completed',
+  agentFailed: 'Failed',
+  agentInterrupted: 'Interrupted',
+  agentSkipped: 'Skipped',
+  agentClosed: 'Closed',
 
   usage: 'Usage: node src/index.js [--setup] [--pi-command /absolute/path/pi] [-- pi args]',
   unknownOption: 'Unknown option: {option}',

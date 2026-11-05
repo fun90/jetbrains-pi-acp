@@ -360,3 +360,87 @@ test('后台任务名压成单行短名，避免 IDE 停止按钮被挤出', () 
   assert.equal(long.length, 60);
   assert.ok(long.endsWith('…'));
 });
+
+test('pi-agents 子 agent 状态快照作为只读异步任务展示，乱序快照被丢弃', async () => {
+  const { agent, parent, records } = await setup(air);
+  const snapshot = (sequence, agents, type = 'snapshot') => ({ protocol: 1, sessionId: 'parent',
+    instanceId: 'run-1', sequence, type, agents });
+  const updates = () => records.map(record => record.params.update);
+  let response;
+  parent.pi.controlResponse = (...args) => { response = args; };
+  // 回合之外也接受快照，并经控制通道回应
+  await agent.control(parent, { id: 'r', action: 'agents_state',
+    params: snapshot(1, [{ id: 'a1', name: 'echo-test', state: 'working', closed: false }]) });
+  assert.deepEqual(response, ['r', {}]);
+  agent.tasks.agentsState(parent, snapshot(1, [{ id: 'a1', name: 'echo-test', state: 'idle', closed: false }]));
+  agent.tasks.agentsState(parent, snapshot(2, [{ id: 'a1', name: 'echo-test', state: 'idle', closed: false }]));
+  agent.tasks.agentsState(parent, snapshot(3, [], 'stopped'));
+  const mine = updates().filter(update => update.asyncTaskId === 'pi-agents:a1');
+  // 名称不带状态；描述单独展示状态，进入终态前先刷新描述。
+  assert.deepEqual(mine.map(update => [update.sessionUpdate, update.name ?? update.state]), [
+    ['async_task_spawned', 'echo-test'],
+    ['async_task_progress', undefined],
+    ['async_task_state_update', 'completed'],
+  ]);
+  assert.equal(mine[0].description, msg('agentWorking'));
+  assert.equal(mine[1].description, msg('agentCompleted'));
+  assert.deepEqual([mine[0].taskType, mine[0].canStop], ['agent', false]);
+  assert.equal(agent.tasks.ownedBy(parent.id).length, 0);
+});
+
+test('pi-agents 区分运行与等待，去重描述并同步各类终态和再次运行', async () => {
+  const { agent, parent, records } = await setup(air);
+  let sequence = 0;
+  const send = (state, closed = false) => agent.tasks.agentsState(parent, {
+    protocol: 1, instanceId: 'run', sequence: ++sequence, type: 'snapshot',
+    agents: [{ id: 'a', name: 'worker', state, closed }],
+  });
+  send('working');
+  send('waiting');
+  send('waiting');
+  send('working');
+  send('idle');
+  send('working');
+  send('failed');
+  send('interrupted');
+  send('skipped');
+  send('working', true);
+  const updates = records.map(record => record.params.update);
+  assert.equal(updates.filter(update => update.sessionUpdate === 'async_task_spawned').length, 1);
+  assert.deepEqual(updates.filter(update => update.sessionUpdate === 'async_task_progress')
+    .map(update => update.description), ['agentWaiting', 'agentWorking', 'agentCompleted', 'agentWorking',
+    'agentFailed', 'agentInterrupted', 'agentSkipped', 'agentClosed'].map(key => msg(key)));
+  assert.deepEqual(updates.filter(update => update.sessionUpdate === 'async_task_state_update')
+    .map(update => update.state), ['completed', 'running', 'failed', 'stopped']);
+});
+
+test('客户端未协商异步任务时忽略 pi-agents 状态快照', async () => {
+  const { agent, parent, records } = await setup();
+  agent.tasks.agentsState(parent, { protocol: 1, instanceId: 'x', sequence: 1, type: 'snapshot',
+    agents: [{ id: 'a', name: 'n', state: 'working', closed: false }] });
+  assert.equal(records.length, 0);
+});
+
+test('pi-agents 停止后从完整快照消失的运行节点收尾，已结束节点不被覆盖', async () => {
+  const { agent, parent, records } = await setup(air);
+  const send = (sequence, agents, type = 'snapshot', instanceId = 'run') => agent.tasks.agentsState(parent,
+    { protocol: 1, instanceId, sequence, type, agents });
+  const info = (id, state) => ({ id, name: id, state, closed: false });
+  send(1, [info('stopped', 'working'), info('failed', 'failed'), info('done', 'idle'), info('live', 'waiting')]);
+  records.length = 0;
+  send(2, [], 'stopped');
+  send(3, [info('live', 'waiting'), null]);
+  assert.equal(records.length, 0);
+  send(4, [info('live', 'working')]);
+  const updates = records.map(record => record.params.update);
+  assert.deepEqual(updates.filter(update => update.asyncTaskId === 'pi-agents:stopped'), [
+    { sessionUpdate: 'async_task_progress', asyncTaskId: 'pi-agents:stopped', description: msg('agentClosed') },
+    { sessionUpdate: 'async_task_state_update', asyncTaskId: 'pi-agents:stopped', state: 'stopped' },
+  ]);
+  assert.ok(!updates.some(update => ['pi-agents:failed', 'pi-agents:done'].includes(update.asyncTaskId)));
+  assert.ok(!updates.some(update => update.asyncTaskId === 'pi-agents:live' && update.state === 'stopped'));
+  records.length = 0;
+  send(5, [info('live', 'working')]);
+  send(1, [], 'snapshot', 'new-publisher');
+  assert.equal(records.length, 0);
+});
