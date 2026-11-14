@@ -398,8 +398,9 @@ export class Agent {
       await turn.filesBefore;
       if (turn.cancelled) throw invalid(t('sessionCancelling'));
       const starts = turn.starts;
+      // 扩展启动回合时，pi 会先进入忙碌状态，再发 agent_start；由 pi 原子决定启动或排队。
       const accepted = await session.pi.request('prompt', {
-        ...prompt, ...(steering ? { streamingBehavior: 'steer' } : {}),
+        ...prompt, streamingBehavior: steering ? 'steer' : 'followUp',
       });
       if (accepted?.disposition === 'started' && turn.starts === starts) turn.settled = false;
       if (accepted?.disposition === 'handled' && created) turn.settle();

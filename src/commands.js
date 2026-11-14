@@ -58,7 +58,9 @@ export class Commands {
           content: { type: 'text', text: t('goalTurnLimit', { turns: turn.goalRounds }) } });
         turn.settle();
       } else {
-        const accepted = await session.pi.request('prompt', { message: t('goalContinue', goal) });
+        const accepted = await session.pi.request('prompt', {
+          message: t('goalContinue', goal), streamingBehavior: 'followUp',
+        });
         if (accepted?.disposition === 'handled') turn.settle();
       }
     } catch (error) {

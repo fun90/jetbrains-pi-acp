@@ -337,6 +337,61 @@ test('会话改名推送到 ACP 并更新历史列表，清除名称发送 null'
   }
 });
 
+test('本机 pi 扩展后台回合预处理期间收到普通提示（本地模型替身）', { skip: !process.env.PI_ACP_SMOKE }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'pi-acp-busy-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const extension = join(directory, 'busy.ts');
+  await writeFile(extension, `import { createAssistantMessageEventStream } from '@earendil-works/pi-ai';
+  export default function (pi: any) {
+    let launched = false;
+    let release: (() => void) | undefined;
+    pi.registerProvider('busy-test', {
+      api: 'busy-test-api', apiKey: 'test', baseUrl: 'http://localhost',
+      models: [{ id: 'mock', name: '排队测试模型', reasoning: false, input: ['text'],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 100 }],
+      streamSimple: (model: any, context: any) => {
+        const stream = createAssistantMessageEventStream();
+        const input = context.messages.filter((message: any) => message.role === 'user').at(-1);
+        const text = '已执行：' + input.content.filter((block: any) => block.type === 'text').map((block: any) => block.text).join('');
+        const message = { role: 'assistant', content: [{ type: 'text', text }], api: model.api,
+          provider: model.provider, model: model.id, stopReason: 'stop', timestamp: Date.now(),
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+        stream.push({ type: 'done', reason: 'stop', message });
+        stream.end();
+        return stream;
+      },
+    });
+    pi.on('agent_settled', () => {
+      if (launched) return;
+      launched = true;
+      pi.sendUserMessage('扩展后台消息', { deliverAs: 'followUp' });
+    });
+    pi.on('before_agent_start', async (event: any) => {
+      if (event.prompt !== '扩展后台消息') return;
+      await new Promise<void>(resolve => {
+        release = resolve;
+        pi.setSessionName('后台回合预处理中');
+      });
+    });
+    pi.on('input', (event: any) => {
+      if (event.text === '继续核查' && release) release();
+    });
+  }`);
+  const c = await client(t, true, undefined, ['--extension', extension, '--model', 'busy-test/mock']);
+  const sid = await session(c);
+  assert.equal((await c.request('session/prompt', { sessionId: sid,
+    prompt: [{ type: 'text', text: '启动后台回合' }] })).result?.stopReason, 'end_turn');
+  await c.wait(record => record.params?.sessionId === sid && record.params.update?.title === '后台回合预处理中');
+  const result = await c.request('session/prompt', { sessionId: sid, prompt: [{ type: 'text', text: '继续核查' }] });
+  assert.equal(result.error, undefined, JSON.stringify(result));
+  assert.equal(result.result.stopReason, 'end_turn');
+  const answers = c.records.filter(record => record.params?.sessionId === sid &&
+    record.params.update.sessionUpdate === 'agent_message_chunk').map(record => record.params.update.content.text);
+  assert.ok(answers.includes('已执行：扩展后台消息'), JSON.stringify(answers));
+  assert.equal(answers.at(-1), '已执行：继续核查');
+});
+
 test('本机 pi 自动命名、扩展改名及 steering（显式启用，使用本地模型替身）', { skip: !process.env.PI_ACP_SMOKE }, async t => {
   const directory = await mkdtemp(join(tmpdir(), 'pi-acp-title-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -633,6 +688,111 @@ test('steering 参数校验、失败响应与回合结束竞态', async () => {
   assert.deepEqual(await agent.dispatch('_session/steering', params), { outcome: 'failed' });
   assert.equal(session.turn, null);
   assert.ok(updates.at(-1).params.update.content.text.includes(msg('executionFailed', { error: '提交失败' })));
+});
+
+test('普通提示遇到 pi 已在处理时排队，等待该消息执行结束再返回', async () => {
+  const updates = [];
+  const agent = new Agent({ send: record => updates.push(record) });
+  agent.initialized = true;
+  let accepted;
+  const queued = new Promise(resolve => { accepted = resolve; });
+  const session = { id: 'busy-pi', turn: null, blocks: new Map(), pi: { request: async (type, params) => {
+    if (type === 'get_session_stats') return { tokens: {}, cost: 0 };
+    assert.equal(type, 'prompt');
+    if (!['steer', 'followUp'].includes(params.streamingBehavior)) {
+      throw new Error("Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.");
+    }
+    accepted(params);
+    return { disposition: 'queued' };
+  } } };
+  agent.sessions.set(session.id, session);
+  let completed = false;
+  const prompt = agent.dispatch('session/prompt', { sessionId: session.id,
+    prompt: [{ type: 'text', text: '继续核查' }, { type: 'image', mimeType: 'image/png', data: 'abc' }] });
+  prompt.then(() => { completed = true; }, () => {});
+  // 原始错误直接向测试传播，避免排队前失败时等待 queued 导致超时。
+  const submitted = await Promise.race([queued, prompt]);
+  assert.equal(submitted.streamingBehavior, 'followUp');
+  assert.equal(submitted.message, '继续核查');
+  assert.deepEqual(submitted.images, [{ type: 'image', mimeType: 'image/png', data: 'abc' }]);
+  assert.equal(completed, false);
+  agent.event(session, { type: 'agent_start' });
+  agent.event(session, { type: 'message_update', assistantMessageEvent: {
+    type: 'text_delta', contentIndex: 0, delta: '核查已完成',
+  } });
+  assert.equal(completed, false);
+  agent.event(session, { type: 'agent_settled', aborted: false });
+  assert.deepEqual(await prompt, { stopReason: 'end_turn' });
+  assert.equal(session.turn, null);
+  assert.ok(updates.some(record => record.params?.update?.content?.text === '核查已完成'));
+});
+
+test('取消尚未执行的普通排队消息时先清队列，再中止 pi 回合', async () => {
+  const agent = new Agent({ send() {} });
+  agent.initialized = true;
+  const requests = [];
+  let accepted;
+  const queued = new Promise(resolve => { accepted = resolve; });
+  let pending;
+  const session = { id: 'cancel-queued', turn: null, pi: { request: async (type, params) => {
+    requests.push(type);
+    if (type === 'get_session_stats') return { tokens: {}, cost: 0 };
+    if (type === 'prompt') {
+      if (params.streamingBehavior !== 'followUp') throw new Error('忙碌时未排队');
+      pending = params.message;
+      accepted();
+      return { disposition: 'queued' };
+    }
+    if (type === 'clear_queue') {
+      pending = undefined;
+      return { steering: [], followUp: ['尚未执行的消息'] };
+    }
+    assert.equal(type, 'abort');
+    assert.equal(pending, undefined);
+    agent.event(session, { type: 'agent_settled', aborted: true });
+  } } };
+  agent.sessions.set(session.id, session);
+  const prompt = agent.dispatch('session/prompt', { sessionId: session.id,
+    prompt: [{ type: 'text', text: '尚未执行的消息' }] });
+  await Promise.race([queued, prompt]);
+  await agent.dispatch('session/cancel', { sessionId: session.id });
+  assert.deepEqual(await prompt, { stopReason: 'cancelled' });
+  assert.deepEqual(requests.filter(type => type !== 'get_session_stats'), ['prompt', 'clear_queue', 'abort']);
+  assert.equal(session.turn, null);
+});
+
+test('目标自动续跑遇到 pi 忙碌时排队，不把排队当作失败', async () => {
+  const agent = new Agent({ send() {} });
+  agent.initialized = true;
+  let ready;
+  const started = new Promise(resolve => { ready = resolve; });
+  let runs = 0;
+  const session = { id: 'busy-goal', turn: null, blocks: new Map(), pi: { request: async (type, params) => {
+    if (type === 'get_session_stats') return { tokens: {}, cost: 0 };
+    assert.equal(type, 'prompt');
+    if (params.message.startsWith('/__acp_goal ')) return { disposition: 'handled' };
+    if (++runs === 1) {
+      agent.event(session, { type: 'agent_start' });
+      ready();
+      return { disposition: 'started' };
+    }
+    if (params.streamingBehavior !== 'followUp') {
+      throw new Error("Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.");
+    }
+    // 续跑结束前暂停目标，防止测试自动发起第三轮。
+    session.goal.status = 'paused';
+    agent.event(session, { type: 'agent_start' });
+    agent.event(session, { type: 'agent_settled', aborted: false });
+    return { disposition: 'queued' };
+  } } };
+  agent.sessions.set(session.id, session);
+  const prompt = agent.dispatch('session/prompt', { sessionId: session.id,
+    prompt: [{ type: 'text', text: '/goal 完成核查' }] });
+  await started;
+  agent.event(session, { type: 'agent_settled', aborted: false });
+  assert.deepEqual(await prompt, { stopReason: 'end_turn' });
+  assert.equal(runs, 2);
+  assert.equal(session.turn, null);
 });
 
 test('并发提示拒绝、取消和进程异常退出', async t => {
