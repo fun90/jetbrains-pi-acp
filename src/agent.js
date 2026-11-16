@@ -7,7 +7,7 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateTerminalInput } from './terminal-input.js';
 import { PiProcess } from './pi.js';
-import { Tasks } from './tasks.js';
+import { Tasks, taskActions } from './tasks.js';
 import { Interactions } from './interactions.js';
 import { Transcript } from './transcript.js';
 import { SessionIndex } from './session-index.js';
@@ -944,9 +944,9 @@ export class Agent {
         if (!session.authorizedTasks?.delete(request.toolCallId)) throw invalid(t('taskToolUnauthorized'));
         result = await this.tasks.start(session, request.action === 'spawn_agent' ? 'agent' : 'shell',
           request.params ?? {}, request.toolCallId);
-      } else if (request.action === 'task_status') result = this.tasks.snapshot(this.tasks.owned(session, request.params?.taskId));
-      else if (request.action === 'stop_task') result = await this.tasks.stop(session, request.params?.taskId);
-      else throw invalid(t('unknownTaskAction'));
+      } else if (request.action === 'task_status') result = await this.tasks.status(session, request.params ?? {});
+      else if (request.action === 'stop_task') result = await this.tasks.stopDetailed(session, request.params?.taskId);
+      else throw invalid(t('unknownTaskAction', { action: request.action, actions: taskActions.join(', ') }));
       session.pi.controlResponse(request.id, result);
     } catch (error) { session.pi.controlResponse(request.id, undefined, error); }
   }

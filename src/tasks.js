@@ -8,6 +8,9 @@ import { t } from './i18n.js';
 
 const running = task => task.state === 'running';
 const MAX_OUTPUT = 256 * 1024;
+const MAX_WAIT_SECONDS = 60;
+const PROVIDER = 'jetbrains-pi-acp';
+export const taskActions = ['spawn_agent', 'background_shell', 'task_status', 'stop_task'];
 // pi-agents 的 AgentState 到异步任务状态的映射；未知状态按运行中处理。
 const piAgentState = { working: 'running', waiting: 'running', idle: 'completed',
   failed: 'failed', interrupted: 'stopped', skipped: 'stopped' };
@@ -86,19 +89,100 @@ export class Tasks {
     }
   }
 
+  // 同时接受 taskId 与子 agent 的 sessionId；找不到时列出本会话可用任务，便于直接重试。
   owned(session, id) {
-    const task = this.tasks.get(id);
-    if (!task || task.owner !== session.id) throw invalid(t('taskNotFound'));
+    const task = typeof id === 'string' && id
+      ? this.tasks.get(id) ?? this.ownedBy(session.id).find(candidate => candidate.childId === id) : undefined;
+    if (!task || task.owner !== session.id) {
+      const known = this.ownedBy(session.id).map(owned => `${owned.id} (${owned.kind}, ${owned.state})`).join('; ');
+      throw invalid(t('taskNotFound', { known: known || t('taskNone') }));
+    }
     return task;
   }
 
-  snapshot(task) {
+  // 只读查询：除自己的任务外，还可查询祖先会话（父、祖父…）拥有的任务，
+  // 供子 agent 查看父级登记的兄弟任务。仅限祖先链，不开放任意会话；停止仍只限所有者。
+  readable(session, id) {
+    try { return this.owned(session, id); }
+    catch (error) {
+      const seen = new Set([session.id]);
+      for (let parent = session.parentId; parent && !seen.has(parent); parent = this.agent.sessions.get(parent)?.parentId) {
+        seen.add(parent);
+        const task = typeof id === 'string' && id ? this.tasks.get(id) ?? this.ownedBy(parent).find(candidate => candidate.childId === id) : undefined;
+        if (task?.owner === parent) return task;
+      }
+      throw error;
+    }
+  }
+
+  // 持久化与 IDE 展示共用的核心字段。
+  core(task) {
     return { taskId: task.id, state: task.state, ...(task.childId ? { sessionId: task.childId } : {}),
       output: task.output, truncated: task.truncated, ...(task.error ? { error: task.error } : {}),
       ...(task.exitCode !== undefined ? { exitCode: task.exitCode } : {}) };
   }
 
+  // 返回给模型/客户端的快照：稳定句柄、进度和下一步可用工具只随查询返回，不写入历史。
+  // handle 只描述本适配器自己的运行时对象，不含业务工作区信息。
+  snapshot(task) {
+    return { ...this.core(task),
+      handle: { provider: PROVIDER, kind: task.kind, taskId: task.id,
+        ...(task.childId ? { sessionId: task.childId } : {}), ownerSessionId: task.owner },
+      nextTools: running(task) ? ['task_status', 'stop_task'] : ['task_status'],
+      ...(task.startedAt ? { startedAt: task.startedAt } : {}),
+      ...(task.lastActivityAt ? { lastActivityAt: task.lastActivityAt } : {}),
+      outputChars: task.output.length };
+  }
+
+  // 查询者不是所有者（祖先只读视图）时标 readOnly，且不推荐其无权调用的 stop_task。
+  view(session, task) {
+    const snapshot = this.snapshot(task);
+    return task.owner === session.id ? snapshot : { ...snapshot, readOnly: true, nextTools: ['task_status'] };
+  }
+
+  touch(task) { task.lastActivityAt = Date.now(); }
+
+  // task_status：无 taskId 时列出本会话任务；waitSeconds 在上限内等待任务结束，不替代调度。
+  async status(session, params = {}) {
+    const { taskId, waitSeconds } = params;
+    if (waitSeconds !== undefined && (typeof waitSeconds !== 'number' || !Number.isFinite(waitSeconds) || waitSeconds < 0)) {
+      throw invalid(t('waitSecondsInvalid', { max: MAX_WAIT_SECONDS }));
+    }
+    if (taskId === undefined || taskId === '') {
+      const tasks = this.ownedBy(session.id).map(task => { const { output, ...rest } = this.snapshot(task); return rest; });
+      return { tasks, hint: t(tasks.length ? 'taskListHint' : 'taskListEmpty', { max: MAX_WAIT_SECONDS }) };
+    }
+    const task = this.readable(session, taskId);
+    if (!waitSeconds) return this.view(session, task);
+    const started = Date.now();
+    const deadline = started + Math.min(waitSeconds, MAX_WAIT_SECONDS) * 1000;
+    let reason = 'finished';
+    while (running(task)) {
+      if (session.turn?.cancelled || this.agent.closing || !this.agent.sessions.has(session.id)) { reason = 'turn_cancelled'; break; }
+      if (Date.now() >= deadline) { reason = 'timeout'; break; }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    return { ...this.view(session, task), wait: { waitedMs: Date.now() - started, timedOut: reason === 'timeout',
+      maxSeconds: MAX_WAIT_SECONDS, reason } };
+  }
+
+  // stop_task：报告实际终态与交接信息；没有真正停止任何东西时明确说明。
+  // 任务自身已结束但仍有运行中的后代时，stop 实际停止的是后代，此时 stoppedDescendants 为 true，
+  // 父任务 state 保持原终态，不代表任务执行者刚刚退出。
+  async stopDetailed(session, id) {
+    const task = this.owned(session, id);
+    const before = task.state;
+    const { stopped } = await this.stop(session, task.id);
+    const snapshot = this.snapshot(task);
+    if (!stopped) return { stopped: false, reason: t(before === 'running' ? 'stopEndedByItself' : 'stopAlreadyFinished',
+      { state: task.state }), ...snapshot };
+    if (before !== 'running') return { stopped: true, stoppedDescendants: true,
+      note: t('stopDescendantsOnly', { state: task.state }), ...snapshot, filesNote: t('stopFilesNote') };
+    return { stopped: true, ...snapshot, filesNote: t('stopFilesNote') };
+  }
+
   output(task, text) {
+    this.touch(task);
     const combined = task.output + text;
     task.output = combined.slice(-MAX_OUTPUT);
     task.truncated ||= combined.length > MAX_OUTPUT;
@@ -107,6 +191,7 @@ export class Tasks {
   finish(task, state, error) {
     if (!running(task)) return;
     task.state = state;
+    this.touch(task);
     if (error) task.error = error.message;
     const parent = this.agent.sessions.get(task.owner);
     if (!parent) return;
@@ -137,7 +222,7 @@ export class Tasks {
   record(task) {
     return { version: 1, owner: task.owner, id: task.id, kind: task.kind, toolCallId: task.toolCallId,
       text: task.text, name: task.name, mode: task.mode,
-      ...(task.customInstructions !== undefined ? { customInstructions: task.customInstructions } : {}), ...this.snapshot(task) };
+      ...(task.customInstructions !== undefined ? { customInstructions: task.customInstructions } : {}), ...this.core(task) };
   }
 
   save(session, task) {
@@ -195,6 +280,7 @@ export class Tasks {
           outputEnd = state.outputEnd;
           task.output = state.output;
           task.truncated = state.truncated === true;
+          if (delta) this.touch(task);
           if (delta) this.agent.update(session, { sessionUpdate: 'tool_call_update', toolCallId: task.toolCallId,
             ...(this.agent.transcript.terminalOutputKey() ? { _meta: {
               [this.agent.transcript.terminalOutputKey()]: { terminal_id: task.toolCallId, data: delta },
@@ -346,8 +432,10 @@ export class Tasks {
     }
     if (restrictedModes.includes(session.mode)) throw invalid(t('modeForbidsTask'));
     const text = kind === 'agent' ? params.prompt : params.command;
-    if (typeof text !== 'string' || !text.trim() || text.length > 100000 ||
-        (params.name !== undefined && (typeof params.name !== 'string' || params.name.length > 10000))) throw invalid(t('taskContentInvalid'));
+    const field = kind === 'agent' ? 'prompt' : 'command';
+    if (typeof text !== 'string' || !text.trim()) throw invalid(t('taskFieldEmpty', { field }));
+    if (text.length > 100000) throw invalid(t('taskFieldTooLong', { field, limit: 100000 }));
+    if (params.name !== undefined && (typeof params.name !== 'string' || params.name.length > 10000)) throw invalid(t('taskNameInvalid'));
     if (kind === 'shell' && (!params.shell || typeof params.shell.shell !== 'string' ||
         !Array.isArray(params.shell.args) || params.shell.args.some(arg => typeof arg !== 'string'))) {
       throw invalid(t('shellConfigInvalid'));
@@ -355,7 +443,8 @@ export class Tasks {
     const task = { id: randomUUID(), owner: session.id, toolCallId, kind, text,
       name: params.name || (kind === 'agent' ? t('subagent') : text), mode: session.mode,
       customInstructions: session.customInstructions, state: 'running',
-      output: '', truncated: false, controller: new AbortController() };
+      output: '', truncated: false, controller: new AbortController(), startedAt: Date.now() };
+    task.lastActivityAt = task.startedAt;
     if (kind === 'agent') task.childId = randomUUID();
     let started;
     task.started = new Promise(resolve => { started = resolve; });

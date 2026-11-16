@@ -101,12 +101,16 @@ export default function (pi: any) {
     }
   }
   for (const [name, description, parameters] of [
-    ['spawn_agent', 'Start a subagent with its own context in the background. Returns a taskId; query it with task_status and stop it with stop_task.',
+    ['spawn_agent', 'Start a subagent with its own context in the background. Returns a handle (taskId, sessionId); query it with task_status (optionally waitSeconds) and stop it with stop_task.',
       Type.Object({ prompt: Type.String({ minLength: 1 }), name: Type.Optional(Type.String()) })],
-    ['background_shell', 'Start a background shell command. Returns a taskId; read output with task_status and stop the whole process group with stop_task.',
+    ['background_shell', 'Start a background shell command. Returns a handle (taskId); read output with task_status and stop the whole process group with stop_task.',
       Type.Object({ command: Type.String({ minLength: 1 }), timeout: Type.Optional(Type.Number({ minimum: 0.001 })) })],
-    ['task_status', 'Get the status and recent output of a background command or subagent created in this session.', Type.Object({ taskId: Type.String() })],
-    ['stop_task', 'Stop only the background command or subagent with the given taskId, leaving other tasks running.', Type.Object({ taskId: Type.String() })],
+    ['task_status', 'Get status, progress and recent output of a background command or subagent created in this session. ' +
+      'taskId accepts the taskId or the subagent sessionId; omit it to list this session\'s tasks. ' +
+      'Set waitSeconds (max 60) to wait for completion instead of sleeping in a shell; repeat the call to keep waiting.',
+      Type.Object({ taskId: Type.Optional(Type.String()), waitSeconds: Type.Optional(Type.Number({ minimum: 0 })) })],
+    ['stop_task', 'Stop only the background command or subagent with the given taskId, leaving other tasks running. ' +
+      'Returns the actual final state and output; stopping does not revert files the task already changed.', Type.Object({ taskId: Type.String() })],
   ] as const) {
     pi.registerTool({ name, label: name, description, parameters,
       execute: async (id: string, args: any, _signal: AbortSignal, _update: any, ctx: any) => {

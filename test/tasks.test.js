@@ -44,7 +44,8 @@ test('后台任务返回 ID、逐块输出、退出状态，并拒绝跨会话�
   const { agent, parent, records } = await setup(air);
   const task = await agent.tasks.start(parent, 'shell', { shell, command: 'printf "你好"; exit 7' }, 'shell-1');
   const stored = agent.tasks.tasks.get(task.taskId);
-  await assert.rejects(agent.tasks.stop({ id: 'other' }, task.taskId), { message: msg('taskNotFound') });
+  await assert.rejects(agent.tasks.stop({ id: 'other' }, task.taskId),
+    { message: msg('taskNotFound', { known: msg('taskNone') }) });
   await stored.completion;
   assert.equal(stored.state, 'failed');
   assert.equal(stored.output, '你好');
@@ -92,7 +93,10 @@ test('任务入口校验权限、参数与授权令牌', async () => {
     await assert.rejects(agent.tasks.start(parent, 'shell', { shell, command: 'echo no' }), { message: msg('modeForbidsTask') });
   }
   parent.mode = 'standard';
-  await assert.rejects(agent.tasks.start(parent, 'agent', { prompt: '' }), { message: msg('taskContentInvalid') });
+  await assert.rejects(agent.tasks.start(parent, 'agent', { prompt: '' }), { message: msg('taskFieldEmpty', { field: 'prompt' }) });
+  await assert.rejects(agent.tasks.start(parent, 'shell', { shell, command: 'x'.repeat(100001) }),
+    { message: msg('taskFieldTooLong', { field: 'command', limit: 100000 }) });
+  await assert.rejects(agent.tasks.start(parent, 'shell', { shell, command: 'echo', name: 5 }), { message: msg('taskNameInvalid') });
   await assert.rejects(agent.tasks.start(parent, 'shell', { command: 'echo no' }), /shell/);
   parent.turn = {};
   let response;
@@ -443,4 +447,132 @@ test('pi-agents 停止后从完整快照消失的运行节点收尾，已结束�
   send(5, [info('live', 'working')]);
   send(1, [], 'snapshot', 'new-publisher');
   assert.equal(records.length, 0);
+});
+
+test('任务快照带稳定句柄、进度与下一步可用工具，结束后不再提示停止', async () => {
+  const { agent, parent } = await setup(air);
+  const result = await agent.tasks.start(parent, 'shell', { shell, command: 'sleep 60' });
+  try {
+    const running = agent.tasks.snapshot(agent.tasks.tasks.get(result.taskId));
+    assert.deepEqual(running.handle, { provider: 'jetbrains-pi-acp', kind: 'shell', taskId: result.taskId, ownerSessionId: 'parent' });
+    assert.deepEqual(running.nextTools, ['task_status', 'stop_task']);
+    assert.ok(running.startedAt <= Date.now() && running.lastActivityAt >= running.startedAt);
+    assert.equal(running.outputChars, 0);
+  } finally { await agent.tasks.stop(parent, result.taskId); }
+  const done = agent.tasks.snapshot(agent.tasks.tasks.get(result.taskId));
+  assert.equal(done.state, 'stopped');
+  assert.deepEqual(done.nextTools, ['task_status']);
+  assert.ok(!parent.journal.at(-1).data.nextTools && !parent.journal.at(-1).data.hint);
+  fakeChild(agent, []);
+  const child = await agent.tasks.start(parent, 'agent', { prompt: '子任务' });
+  assert.deepEqual(agent.tasks.snapshot(agent.tasks.tasks.get(child.taskId)).handle, {
+    provider: 'jetbrains-pi-acp', kind: 'agent', taskId: child.taskId, sessionId: child.sessionId, ownerSessionId: 'parent' });
+});
+
+test('任务可用 taskId 或子会话 sessionId 查询，未知 ID 的错误列出本会话任务', async () => {
+  const { agent, parent } = await setup(air);
+  fakeChild(agent, []);
+  const child = await agent.tasks.start(parent, 'agent', { prompt: '子任务' }, 'a');
+  const shellTask = await agent.tasks.start(parent, 'shell', { shell, command: 'printf x' }, 'b');
+  assert.equal(agent.tasks.owned(parent, child.sessionId).id, child.taskId);
+  assert.throws(() => agent.tasks.owned({ id: 'other' }, child.sessionId), /任务不存在|does not exist/);
+  for (const id of [undefined, '', 'missing', 5]) {
+    assert.throws(() => agent.tasks.owned(parent, id), error => error.code === -32602 &&
+      error.message.includes(child.taskId) && error.message.includes(shellTask.taskId));
+  }
+  await agent.tasks.tasks.get(shellTask.taskId).completion;
+});
+
+test('task_status 不带 taskId 列出本会话任务，waitSeconds 有上限并在结束时提前返回', async () => {
+  const { agent, parent } = await setup(air);
+  const none = await agent.tasks.status(parent, {});
+  assert.deepEqual(none.tasks, []);
+  const slow = await agent.tasks.start(parent, 'shell', { shell, command: 'sleep 60' });
+  const quick = await agent.tasks.start(parent, 'shell', { shell, command: 'printf ok' });
+  try {
+    const listed = await agent.tasks.status(parent, {});
+    assert.deepEqual(listed.tasks.map(task => task.taskId).sort(), [slow.taskId, quick.taskId].sort());
+    assert.ok(listed.tasks.every(task => !('output' in task) && task.handle && task.nextTools));
+    const early = await agent.tasks.status(parent, { taskId: quick.taskId, waitSeconds: 30 });
+    assert.equal(early.state, 'completed');
+    assert.equal(early.wait.timedOut, false);
+    assert.ok(early.wait.waitedMs < 5000);
+    const timeout = await agent.tasks.status(parent, { taskId: slow.taskId, waitSeconds: 0.2 });
+    assert.equal(timeout.state, 'running');
+    assert.deepEqual([timeout.wait.timedOut, timeout.wait.maxSeconds], [true, 60]);
+    assert.ok(timeout.wait.waitedMs >= 150);
+    parent.turn = { cancelled: true };
+    const cancelled = await agent.tasks.status(parent, { taskId: slow.taskId, waitSeconds: 30 });
+    assert.ok(cancelled.wait.waitedMs < 1000);
+    assert.deepEqual([cancelled.wait.timedOut, cancelled.wait.reason], [false, 'turn_cancelled']);
+    assert.equal(timeout.wait.reason, 'timeout');
+    await assert.rejects(agent.tasks.status(parent, { taskId: slow.taskId, waitSeconds: -1 }), /waitSeconds/);
+    await assert.rejects(agent.tasks.status(parent, { taskId: slow.taskId, waitSeconds: 'x' }), /waitSeconds/);
+  } finally { parent.turn = null; await agent.tasks.close(parent); }
+});
+
+test('stop_task 返回实际终态与交接信息，已结束任务明确说明未停止任何东西', async () => {
+  const { agent, parent } = await setup(air);
+  const running = await agent.tasks.start(parent, 'shell', { shell, command: 'printf partial; sleep 60' });
+  await new Promise(resolve => setTimeout(resolve, 500));
+  const stopped = await agent.tasks.stopDetailed(parent, running.taskId);
+  assert.equal(stopped.stopped, true);
+  assert.equal(stopped.state, 'stopped');
+  assert.equal(stopped.output, 'partial');
+  assert.equal(stopped.filesNote, msg('stopFilesNote'));
+  assert.deepEqual(stopped.nextTools, ['task_status']);
+  const again = await agent.tasks.stopDetailed(parent, running.taskId);
+  assert.equal(again.stopped, false);
+  assert.equal(again.reason, msg('stopAlreadyFinished', { state: 'stopped' }));
+  const failed = await agent.tasks.start(parent, 'shell', { shell, command: 'exit 3' });
+  await agent.tasks.tasks.get(failed.taskId).completion;
+  const finished = await agent.tasks.stopDetailed(parent, failed.taskId);
+  assert.deepEqual([finished.stopped, finished.state, finished.exitCode], [false, 'failed', 3]);
+  assert.ok(!('filesNote' in finished));
+});
+
+test('控制通道的任务工具返回句柄，未知操作列出可用操作', async () => {
+  const { agent, parent } = await setup(air);
+  parent.turn = {};
+  const responses = [];
+  parent.pi.controlResponse = (...args) => responses.push(args);
+  await agent.control(parent, { id: 'l', action: 'task_status', params: {} });
+  assert.deepEqual(responses[0], ['l', { tasks: [], hint: msg('taskListEmpty', { max: 60 }) }]);
+  await agent.control(parent, { id: 'x', action: 'task_wait', params: {} });
+  assert.match(responses[1][2].message, /task_wait.*spawn_agent.*background_shell.*task_status.*stop_task/);
+});
+
+test('已结束的子 agent 留有运行中后代时，stop 明确只停止了后代', async () => {
+  const { agent, parent } = await setup(air);
+  fakeChild(agent, []);
+  const result = await agent.tasks.start(parent, 'agent', { prompt: '创建后台后代' });
+  await agent.tasks.tasks.get(result.taskId).completion;
+  const child = agent.sessions.get(result.sessionId);
+  child.file = join(parent.file + '.child.jsonl');
+  const background = await agent.tasks.start(child, 'shell', { shell, command: 'sleep 60' });
+  const stopped = await agent.tasks.stopDetailed(parent, result.taskId);
+  assert.deepEqual([stopped.stopped, stopped.stoppedDescendants, stopped.state], [true, true, 'completed']);
+  assert.equal(stopped.note, msg('stopDescendantsOnly', { state: 'completed' }));
+  assert.equal(agent.tasks.tasks.has(background.taskId), false);
+});
+
+test('子会话可只读查询祖先拥有的任务，但不能停止，也不能查询无关会话的任务', async () => {
+  const { agent, parent } = await setup(air);
+  fakeChild(agent, []);
+  const sibling = await agent.tasks.start(parent, 'shell', { shell, command: 'sleep 60' });
+  const child = await agent.tasks.start(parent, 'agent', { prompt: '子任务' });
+  const childSession = agent.sessions.get(child.sessionId);
+  const stranger = { id: 'stranger', parentId: undefined };
+  agent.sessions.set(stranger.id, stranger);
+  try {
+    const viewed = await agent.tasks.status(childSession, { taskId: sibling.taskId });
+    assert.deepEqual([viewed.taskId, viewed.state, viewed.readOnly, viewed.nextTools], [sibling.taskId, 'running', true, ['task_status']]);
+    const waited = await agent.tasks.status(childSession, { taskId: sibling.taskId, waitSeconds: 0.1 });
+    assert.deepEqual([waited.readOnly, waited.nextTools], [true, ['task_status']]);
+    const own = await agent.tasks.status(parent, { taskId: sibling.taskId });
+    assert.deepEqual([own.readOnly, own.nextTools], [undefined, ['task_status', 'stop_task']]);
+    assert.deepEqual((await agent.tasks.status(childSession, {})).tasks, []);
+    await assert.rejects(agent.tasks.stopDetailed(childSession, sibling.taskId), /does not exist|不存在/);
+    await assert.rejects(agent.tasks.status(stranger, { taskId: sibling.taskId }), /does not exist|不存在/);
+  } finally { await agent.tasks.stop(parent, sibling.taskId); }
 });
