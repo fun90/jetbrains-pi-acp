@@ -16,7 +16,7 @@ npm pack
 
 普通测试使用本地替身；`PI_ACP_SMOKE=1 npm test` 通过 npm 自动添加的 `node_modules/.bin` 使用本项目依赖的 pi，也可设置 `PI_ACP_PI_COMMAND` 为外部 pi 的绝对路径。测试使用本地模型替身，不调用远端模型。
 
-检查包文件列表：应包含 `src/`、`extensions/`、`scripts/`、`examples/`、`package.json`、README 和许可证，不应包含测试、临时文件、IDE 配置或用户凭据。pi `1.3.0` 与 `typebox` 作为 npm 依赖安装，不嵌入压缩包。固定 pi 版本可避免其接口更新直接破坏适配器。
+检查包文件列表：应包含 `src/`、`extensions/`、`scripts/`、`examples/`、`package.json`、README 和许可证，不应包含测试、临时文件、IDE 配置或用户凭据。pi `1.5.2` 与 `typebox` 作为 npm 依赖安装，不嵌入压缩包。固定 pi 版本可避免其接口更新直接破坏适配器。
 
 在项目外的空目录安装生成的压缩包，再通过安装后的命令验证，避免错误地使用源码或全局 pi：
 

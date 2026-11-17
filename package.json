@@ -1,6 +1,6 @@
 {
   "name": "jetbrains-pi-acp",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "type": "module",
   "description": "连接 JetBrains IDE 与 pi coding agent 的 ACP 适配器",
   "bin": {
@@ -31,7 +31,7 @@
     "examples/"
   ],
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "1.3.0",
+    "@earendil-works/pi-coding-agent": "1.5.2",
     "typebox": "1.3.27"
   },
   "license": "MIT"

@@ -4,14 +4,14 @@
 
 通过 ACP 将 [pi coding agent](https://github.com/earendil-works/pi) 连接到 JetBrains IDE，支持历史会话、权限控制、文件 diff、子 agent 和后台任务。
 
-需要 **Node.js 22.19.0+** 和支持 ACP 的 JetBrains IDE，例如安装了 Air 插件（`com.intellij.air`）的 IntelliJ IDEA。npm 包自带 pi `1.3.0`，无需全局安装 pi，也无需构建。
+需要 **Node.js 22.19.0+** 和支持 ACP 的 JetBrains IDE，例如安装了 Air 插件（`com.intellij.air`）的 IntelliJ IDEA。npm 包自带 pi `1.5.2`，无需全局安装 pi，也无需构建。
 
 ## 快速开始
 
 1. 在终端中登录模型提供商：
 
    ```bash
-   npx --yes jetbrains-pi-acp@0.1.12 --setup
+   npx --yes jetbrains-pi-acp@0.1.13 --setup
    ```
 
    在 pi 中运行 `/login`，完成登录后退出 pi 并返回 IDE。凭据由 pi 管理。
@@ -23,7 +23,7 @@
      "agent_servers": {
        "pi": {
          "command": "npx",
-         "args": ["--yes", "jetbrains-pi-acp@0.1.12"],
+         "args": ["--yes", "jetbrains-pi-acp@0.1.13"],
          "use_idea_mcp": true,
          "use_custom_mcp": true
        }
@@ -56,7 +56,7 @@ IDE 必须能找到 `npx`，必要时使用其绝对路径。菜单位置随 IDE
 在 Agent 的 `args` 末尾添加 `--`，随后传递 pi 参数，例如：
 
 ```json
-["--yes", "jetbrains-pi-acp@0.1.12", "--", "--model", "provider/model-id", "--thinking", "medium"]
+["--yes", "jetbrains-pi-acp@0.1.13", "--", "--model", "provider/model-id", "--thinking", "medium"]
 ```
 
 这里只传配置选项，不传初始提示、交互模式或会话选择参数。RPC 模式和会话由适配器管理。

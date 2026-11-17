@@ -18,7 +18,7 @@ test('默认 pi 来自安装依赖，显式命令与参数保持原样', async (
   const bundled = resolvePi(undefined, ['--version']);
   assert.equal(bundled.command, process.execPath);
   const { stdout } = await execute(bundled.command, bundled.args);
-  assert.equal(stdout.trim(), '1.3.0');
+  assert.equal(stdout.trim(), '1.5.2');
   assert.deepEqual(resolvePi('/custom/pi', ['--model', 'x']),
     { command: '/custom/pi', args: ['--model', 'x'] });
 });
