@@ -621,6 +621,45 @@ test('Air steering 注入文本和图片，原提示等待补充消息执行完�
   assert.ok(c.records.indexOf(chunk) < c.records.indexOf(secondChunk));
 });
 
+test('Air v1 普通并发提示排入 followUp，其他客户端仍拒绝', async () => {
+  for (const [airClient, protocolVersion, allowed] of [[true, 1, true], [false, 1, false], [true, 2, false]]) {
+    const agent = new Agent({ send() {} });
+    Object.assign(agent, { initialized: true, airClient, protocolVersion });
+    const submitted = [];
+    const session = { id: 'concurrent', turn: null, pi: { request: async (type, params) => {
+      if (type === 'get_session_stats') return { tokens: {}, cost: 0 };
+      submitted.push(params);
+      if (submitted.length === 1) {
+        agent.event(session, { type: 'agent_start' });
+        return { disposition: 'started' };
+      }
+      return { disposition: 'queued' };
+    } } };
+    agent.sessions.set(session.id, session);
+    const params = message => ({ sessionId: session.id, prompt: [{ type: 'text', text: message }] });
+    const first = agent.dispatch('session/prompt', params('原任务'));
+    while (!submitted.length) await new Promise(resolve => setImmediate(resolve));
+    if (!allowed) {
+      await assert.rejects(agent.dispatch('session/prompt', params('补充')), { message: msg('promptRunning') });
+      agent.event(session, { type: 'agent_settled' });
+      await first;
+      continue;
+    }
+    let completed = false;
+    // 本地命令也不能绕过正在执行的回合，必须交给 pi 排队。
+    const second = agent.dispatch('session/prompt', params('/status')).then(result => { completed = true; return result; });
+    while (submitted.length < 2) await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(completed, false);
+    assert.equal(submitted[1].message, '/status');
+    assert.equal(submitted[1].streamingBehavior, 'followUp');
+    agent.event(session, { type: 'agent_settled' });
+    assert.equal((await first).stopReason, 'end_turn');
+    assert.equal((await second).stopReason, 'end_turn');
+    assert.equal(session.turn, null);
+  }
+});
+
 test('空闲 steering 启动新回合，继续接收补充消息并可取消', async t => {
   const c = await client(t);
   const sid = await session(c);

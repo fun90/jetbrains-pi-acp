@@ -239,14 +239,17 @@ export class Agent {
     if (this.terminalChatInput && await this.commands.terminalChat(session, convertPrompt(params.prompt))) {
       return steering ? { outcome: 'injected' } : { stopReason: 'end_turn' };
     }
-    if (session.turn && !steering) throw invalid(t('promptRunning'));
+    // Air v1 的运行中发送入口也会发普通 prompt；作为 followUp 排队，响应仍等待回合结束。
+    if (session.turn && !steering && !(this.airClient && this.protocolVersion !== 2)) {
+      throw invalid(t('promptRunning'));
+    }
     if (session.turn?.cancelled) throw invalid(t('sessionCancelling'));
     if (session.turn?.finishing) throw invalid(t('sessionReporting'));
     if (session.changingConfig) throw invalid(t('configChanging'));
     const prompt = convertPrompt(params.prompt);
     // Air 会把选中的提交、文件等附件以 "context: renderer=..." 块追加在文本后，命令判断需先去掉。
     const command = prompt.message.split(/\n\ncontext: renderer=/)[0].trim();
-    if (!steering && !prompt.images && this.commands.isLocal(command)) {
+    if (!session.turn && !steering && !prompt.images && this.commands.isLocal(command)) {
       return this.commands.run(session, command, this.fileReportRequest(params));
     }
     return this.prompt(session, prompt, steering, steering ? undefined : this.fileReportRequest(params));

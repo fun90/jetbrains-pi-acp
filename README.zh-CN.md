@@ -47,7 +47,7 @@ IDE 必须能找到 `npx`，必要时使用其绝对路径。菜单位置随 IDE
 - 任务工具返回稳定句柄（`provider`、`taskId`、`sessionId`、所有者会话）和 `nextTools`。`task_status` 接受 taskId 或子 agent sessionId，不带参数时列出任务，并支持 `waitSeconds`（上限 60，可重复调用）以代替 shell sleep；子 agent 可只读查询祖先会话的任务，但不能停止。`stop_task` 返回实际终态、输出，以及是否仅停止了遗留后代任务，不会回滚文件。未知任务 ID 和操作会列出可用选项。适配器无法控制 pi 原生 `agent_*` 工具、`pi-agents` 的 ID，也不负责 browser/MCP 工具路由。
 - 安装 `pi-agents` 后，其子 agent 在支持 `asyncTasks` 的 Air 任务列表中只读展示运行和等待依赖状态，完成、失败或停止后退出活动列表；当前扩展的状态快照不提供工具详情或完成百分比。
 - `/goal <目标>` 和 `/goal resume` 会自动持续执行，直到模型验证完成并调用 `goal_complete` 清除目标；连续 20 轮仍未完成会暂停，可用 `/goal resume` 继续。停止按钮取消当前执行，`/goal pause` 或 Air 目标面板的暂停操作阻止后续轮次。完成由执行模型判断，不包含独立审计。Air 面板设置或恢复目标仅同步状态，启动执行请发送 `/goal resume`。
-- 按客户端能力提供 steering、终端 stdin、表单和 URL 交互。Air v1 可在命令执行期间发送 `/stdin 文本` 和 `/eof`。
+- 按客户端能力提供 steering、终端 stdin、表单和 URL 交互。Air v1 可在命令执行期间发送 `/stdin 文本` 和 `/eof`。Air v1 在回合运行期间发送的普通消息会作为后续提示排队，其提示请求等待回合结束后返回。
 
 **默认完全访问，自动允许工具调用。** 标准访问对内置只读工具以外的工具逐次授权；只读和规划模式拒绝这些工具。权限模式不是操作系统沙箱，安装的 pi 扩展仍属于受信任代码。具体功能取决于客户端协商能力。
 
