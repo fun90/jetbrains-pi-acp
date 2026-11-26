@@ -92,7 +92,7 @@ function run(message) {
       send({ type: 'message_end', message: notice });
       reply('任务完成');
       settle(false);
-    }, 30);
+    }, 400);
     return;
   }
   if (message === 'ask') {

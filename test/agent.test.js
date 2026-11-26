@@ -153,21 +153,30 @@ test('扩展对话框按客户端能力转成表单，扩展命令通知显示�
   assert.match(messageText(c.updates(sid, from)), /排队：跟进/);
 });
 
-test('后台任务以计划显示在输入框上方：启动时运行中，完成通知后完成，下次提问时清除', async t => {
+test('后台任务以计划显示在输入框上方：启动时运行中，回合结束后重新发布，全部完成后等回复结束再更新，下次提问时清除', async t => {
   const c = await client(t);
   await initialize(c);
   const { sessionId: sid } = await newSession(c);
   const plans = () => c.updates(sid).filter(update => update.sessionUpdate === 'plan');
-  assert.equal((await prompt(c, sid, 'background')).result.stopReason, 'end_turn');
-  assert.deepEqual(plans()[0].entries, [{ priority: 'medium', status: 'in_progress',
-    content: msg('backgroundEntry', { label: '构建', status: msg('backgroundRunning') }) }]);
+  const running = [{ priority: 'medium', status: 'in_progress',
+    content: msg('backgroundEntry', { label: '构建', status: msg('backgroundRunning') }) }];
+  const response = await prompt(c, sid, 'background');
+  assert.equal(response.result.stopReason, 'end_turn');
+  assert.deepEqual(plans()[0].entries, running);
+  const republished = await c.wait(record => record.params?.update?.sessionUpdate === 'plan',
+    c.records.indexOf(response) + 1);
+  assert.deepEqual(republished.params.update.entries, running);
+  // fixture 的 reply 会把“任务完成”拆成“任务”和“完成”两段，等末尾 chunk 确认完成计划在回复之后才发出。
+  const replyChunk = await c.wait(record => record.params?.update?.sessionUpdate === 'agent_message_chunk' &&
+    record.params.update.content?.text === '完成', c.records.indexOf(republished) + 1);
   const done = await c.wait(record => record.params?.update?.sessionUpdate === 'plan' &&
     record.params.update.entries[0]?.status === 'completed');
+  assert.ok(c.records.indexOf(done) > c.records.indexOf(replyChunk));
   assert.equal(done.params.update.entries[0].content, msg('backgroundEntry', { label: '构建',
     status: msg('backgroundElapsed', { status: msg('backgroundSucceeded'), seconds: 10 }) }));
   await prompt(c, sid, '你好');
   assert.deepEqual(plans().at(-1).entries, []);
-  assert.equal(plans().length, 3);
+  assert.equal(plans().length, 4);
 });
 
 test('不支持表单的客户端取消扩展对话框；模型错误返回 JSON-RPC 错误；pi 退出后会话报错', async t => {

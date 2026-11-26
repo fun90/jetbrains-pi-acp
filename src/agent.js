@@ -78,6 +78,8 @@ export class Agent {
       this.send({ jsonrpc: '2.0', id: message.id, result });
       if (['session/new', 'session/load', 'session/resume'].includes(message.method)) {
         await this.sessions.get(result.sessionId ?? params.sessionId)?.publish();
+      } else if (message.method === 'session/prompt') {
+        this.sessions.get(params.sessionId)?.scheduleBackgroundRepublish();
       }
     } catch (error) {
       this.send({ jsonrpc: '2.0', id: message.id, error: failure(error) });

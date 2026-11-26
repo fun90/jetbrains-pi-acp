@@ -33,6 +33,8 @@ export class Session {
     this.allowedTools = new Set();
     this.blocks = new Map();
     this.background = new Map();
+    this.backgroundTimer = null;
+    this.backgroundPendingFinish = false;
     this.messageId = randomUUID();
   }
 
@@ -66,12 +68,16 @@ export class Session {
 
   fail(error) {
     this.failure = error;
+    this.clearBackgroundTimer();
+    this.backgroundPendingFinish = false;
     this.agent.cancelRequests(this);
     if (this.turn) { this.turn.error = error; this.turn.done(); }
   }
 
   async close() {
     this.changing = true;
+    this.clearBackgroundTimer();
+    this.backgroundPendingFinish = false;
     try { await this.cancel(); } catch { /* 进程已退出时直接关闭。 */ }
     this.agent.cancelRequests(this);
     try { await this.pi?.close(); }
@@ -173,6 +179,7 @@ export class Session {
   async prompt(blocks) {
     if (this.failure) throw this.failure;
     if (this.busy) throw invalid(t('promptRunning'));
+    this.clearBackgroundTimer();
     this.clearFinishedBackground();
     const prompt = convertPrompt(blocks);
     const text = prompt.message.trim();
@@ -294,6 +301,7 @@ export class Session {
         break;
       case 'agent_settled':
         this.running = false;
+        if (this.backgroundPendingFinish) this.publishBackground();
         if (turn) {
           turn.settled = true;
           if (event.aborted) turn.cancelled = true;
@@ -402,7 +410,36 @@ export class Session {
       this.background.set(task.id, task);
       changed = true;
     }
-    if (changed) this.publishBackground();
+    if (!changed) return;
+    // 全部任务结束且 pi 正在处理完成通知时，等到模型回复结束（agent_settled）再发最终 completed 关闭面板。
+    if (this.running && !this.hasRunningBackground()) {
+      this.clearBackgroundTimer();
+      this.backgroundPendingFinish = true;
+      return;
+    }
+    this.publishBackground();
+  }
+
+  clearBackgroundTimer() {
+    if (!this.backgroundTimer) return;
+    clearTimeout(this.backgroundTimer);
+    this.backgroundTimer = null;
+  }
+
+  hasRunningBackground() {
+    return [...this.background.values()].some(task => task.status === 'running');
+  }
+
+  // 回合结束后客户端会异步收起本轮计划；延迟一小段时间重新发布，保持运行中的后台任务可见。
+  scheduleBackgroundRepublish(delay = 100) {
+    this.clearBackgroundTimer();
+    if (!this.hasRunningBackground()) return;
+    this.backgroundTimer = setTimeout(() => {
+      this.backgroundTimer = null;
+      if (this.busy || this.failure || this.pi?.closed || !this.hasRunningBackground()) return;
+      this.publishBackground();
+    }, delay);
+    this.backgroundTimer.unref?.();
   }
 
   // 已结束的任务保留到用户下一次提问。
@@ -415,6 +452,8 @@ export class Session {
   }
 
   publishBackground() {
+    this.clearBackgroundTimer();
+    this.backgroundPendingFinish = false;
     const entries = [...this.background.values()].map(task => {
       const status = t(BACKGROUND_STATUS[task.status]);
       const finished = task.status !== 'running';
