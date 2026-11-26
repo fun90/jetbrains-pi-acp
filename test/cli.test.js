@@ -6,8 +6,10 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import manifest from '../package.json' with { type: 'json' };
 import { Agent } from '../src/agent.js';
 import { resolvePi } from '../src/pi-command.js';
+import { PiProcess } from '../src/pi.js';
 import { ProtocolAgent } from '../src/protocol.js';
 import { t as msg } from '../src/i18n.js';
 
@@ -18,9 +20,25 @@ test('默认 pi 来自安装依赖，显式命令与参数保持原样', async (
   const bundled = resolvePi(undefined, ['--version']);
   assert.equal(bundled.command, process.execPath);
   const { stdout } = await execute(bundled.command, bundled.args);
-  assert.equal(stdout.trim(), '1.5.2');
+  assert.equal(stdout.trim(), manifest.dependencies['@earendil-works/pi-coding-agent']);
   assert.deepEqual(resolvePi('/custom/pi', ['--model', 'x']),
     { command: '/custom/pi', args: ['--model', 'x'] });
+});
+
+test('pi 监听控制管道时仍可主动发请求并收到回包', { timeout: 5000 }, async t => {
+  const reply = Promise.withResolvers();
+  const pi = new PiProcess({ command: process.execPath, cwd: tmpdir(), configPath: '', args: ['--eval', `
+    const { Socket } = require('node:net');
+    const { createInterface } = require('node:readline');
+    const control = new Socket({ fd: 3, readable: true, writable: true });
+    createInterface({ input: control }).once('line', line => console.log(line));
+    setTimeout(() => control.write(JSON.stringify({ type: 'acp_task_request', id: 'test' }) + '\\n'), 50);
+    process.stdin.resume();
+    process.stdin.once('end', () => control.destroy());
+  `], onControl: request => pi.controlResponse(request.id, 'ok'), onEvent: reply.resolve,
+  onFailure: reply.reject });
+  t.after(() => pi.close());
+  assert.deepEqual(await reply.promise, { type: 'acp_task_response', id: 'test', success: true, data: 'ok' });
 });
 
 test('终端认证启动同一个 pi 并保留参数、交互输入与退出码', async t => {

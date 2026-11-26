@@ -1,9 +1,10 @@
 import test from 'node:test';
+import { getShellConfig } from '@earendil-works/pi-coding-agent';
 import assert from 'node:assert/strict';
 import { TerminalProcesses, validateTerminalInput } from '../src/terminal-input.js';
 import { t as msg } from '../src/i18n.js';
 
-const shell = { shell: '/bin/bash', args: ['-c'] };
+const shell = process.platform === 'win32' ? getShellConfig() : { shell: '/bin/bash', args: ['-c'] };
 const cwd = process.cwd();
 
 function start(terminals, id, command, options = {}) {

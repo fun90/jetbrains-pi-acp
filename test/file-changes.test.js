@@ -91,15 +91,16 @@ test('Git 快照遵守嵌套忽略和否定规则，保留已跟踪文件并支�
   git(['add', '-f', '.DS_Store']);
   git(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-m', '初始化']);
   const before = await fileSnapshot(cwd);
+  const specialName = process.platform === 'win32' ? '新 文件名.txt' : '新 文件\n名.txt';
   for (const name of ['target/generated.class', 'ignored.class', 'nested/ignored.tmp',
-    'target/tracked.class', 'tracked.class', 'keep.class', 'nested/keep.tmp', 'build/source.js', '新 文件\n名.txt']) {
+    'target/tracked.class', 'tracked.class', 'keep.class', 'nested/keep.tmp', 'build/source.js', specialName]) {
     await writeFile(join(cwd, name), '新');
   }
   await rm(join(cwd, 'tracked-deleted.class'));
   const after = await fileSnapshot(cwd);
   assert.equal(before.incomplete || after.incomplete, false);
   const expected = ['target/tracked.class', 'tracked.class', 'tracked-deleted.class',
-    'keep.class', 'nested/keep.tmp', 'build/source.js', '新 文件\n名.txt'];
+    'keep.class', 'nested/keep.tmp', 'build/source.js', specialName];
   assert.deepEqual(changedFiles(before, after).sort(), expected.map(name => join(cwd, name)).sort());
   assert.equal(after.files.has(join(cwd, 'target', 'generated.class')), false);
   assert.equal(after.files.has(join(cwd, '.DS_Store')), false);
@@ -123,13 +124,17 @@ test('符号链接不跟随到目录外，链接自身变化仍可报告', async
   const outside = join(directory, 'outside');
   await mkdir(cwd);
   await mkdir(outside);
-  await symlink(outside, join(cwd, 'link'));
+  const link = join(cwd, 'link');
+  const type = process.platform === 'win32' ? 'junction' : 'dir';
+  await symlink(outside, link, type);
   const before = await fileSnapshot(cwd);
   await writeFile(join(outside, 'secret'), '目录外数据');
+  const next = join(outside, 'next');
+  await mkdir(next);
   assert.deepEqual(changedFiles(before, await fileSnapshot(cwd)), []);
-  await rm(join(cwd, 'link'));
-  await symlink(join(outside, 'secret'), join(cwd, 'link'));
-  assert.deepEqual(changedFiles(before, await fileSnapshot(cwd)), [join(cwd, 'link')]);
+  await rm(link);
+  await symlink(next, link, type);
+  assert.deepEqual(changedFiles(before, await fileSnapshot(cwd)), [link]);
 });
 
 test('扫描失败标记不完整，缺失项不误报新增或删除', async () => {

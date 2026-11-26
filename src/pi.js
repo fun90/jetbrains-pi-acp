@@ -9,7 +9,8 @@ export class PiProcess {
     this.closed = false;
     this.child = spawn(command, args, {
       cwd, env: { ...process.env, PI_ACP_CONFIG: configPath },
-      stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
+      // Windows 上，同步双工管道的挂起读取会阻塞 pi 主动发出的控制请求。
+      stdio: ['pipe', 'pipe', 'pipe', process.platform === 'win32' ? 'overlapped' : 'pipe'],
     });
     this.child.stderr.pipe(process.stderr, { end: false });
     this.child.stdin.on('error', error => this.fail(error, onFailure));

@@ -4,7 +4,7 @@
 
 Connect the [pi coding agent](https://github.com/earendil-works/pi) to JetBrains IDEs through ACP, with session history, permission controls, file diffs, subagents, and background tasks.
 
-Requires **Node.js 22.19.0+** and a JetBrains IDE with ACP support, such as IntelliJ IDEA with the Air plugin (`com.intellij.air`). The npm package includes pi `1.5.2`; no global pi installation or build step is required.
+Requires **Node.js 22.19.0+** and a JetBrains IDE with ACP support, such as IntelliJ IDEA with the Air plugin (`com.intellij.air`). The npm package includes pi `1.6.1`; no global pi installation or build step is required.
 
 ## Quick start
 

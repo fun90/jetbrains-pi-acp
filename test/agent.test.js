@@ -16,10 +16,29 @@ import { convertMcp, convertPrompt } from '../src/convert.js';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const fixture = fileURLToPath(new URL('../fixtures/pi.js', import.meta.url));
+const cleanups = new WeakMap();
+
+function cleanup(t, action) {
+  if (!cleanups.has(t)) {
+    const actions = [];
+    cleanups.set(t, actions);
+    t.after(async () => {
+      const errors = [];
+      // Windows 必须先关闭使用目录的 pi，再删除测试目录。共享历史的客户端也按反序关闭。
+      for (const dispose of actions.reverse()) {
+        try { await dispose(); }
+        catch (error) { errors.push(error); }
+      }
+      if (errors.length) throw new AggregateError(errors, '清理测试资源失败');
+    });
+  }
+  cleanups.get(t).push(action);
+}
 
 async function client(t, real = false, savedDirectory, extraArgs = [], env = {}) {
   const directory = savedDirectory ?? await mkdtemp(join(tmpdir(), 'pi-acp-test-'));
-  const child = spawn(process.execPath, ['src/index.js', '--pi-command', real ? (process.env.PI_ACP_PI_COMMAND || 'pi') : process.execPath,
+  const command = real ? process.env.PI_ACP_PI_COMMAND : process.execPath;
+  const child = spawn(process.execPath, ['src/index.js', ...(command ? ['--pi-command', command] : []),
     '--', ...(real ? ['--offline', '--no-extensions', '--no-skills', '--no-context-files', '--no-mcp'] : [fixture]), ...extraArgs],
   { cwd: root, env: { ...process.env, ...env, PI_CODING_AGENT_SESSION_DIR: directory }, stdio: ['pipe', 'pipe', 'pipe'] });
   let stderr = '';
@@ -50,7 +69,7 @@ async function client(t, real = false, savedDirectory, extraArgs = [], env = {})
     return wait(record => record.id === requestId && !record.method);
   };
   let crashed = false;
-  t.after(async () => {
+  cleanup(t, async () => {
     for (const waiter of waiters) clearTimeout(waiter.timer);
     if (child.exitCode === null && child.signalCode === null) {
       const exit = once(child, 'exit');
@@ -194,7 +213,7 @@ test('Air v1 聊天命令直接写入 stdin，保留空白并拒绝歧义与无�
 for (const version of [1, 2]) {
   test(`本机 pi ACP v${version} 交互 stdin、EOF 和取消（本地模型替身）`, { skip: !process.env.PI_ACP_SMOKE }, async t => {
     const directory = await mkdtemp(join(tmpdir(), 'pi-acp-stdin-'));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    cleanup(t, () => rm(directory, { recursive: true, force: true }));
     const extension = join(directory, 'stdin-model.ts');
     await writeFile(extension, `import { createAssistantMessageEventStream } from '@earendil-works/pi-ai';
     export default function (pi: any) {
@@ -1687,7 +1706,7 @@ test('拒绝用 --no-session 禁用 ACP 会话持久化', async t => {
 
 test('本机 pi 文件 diff、写入快照及跨进程回放（显式启用，使用本地模型替身）', { skip: !process.env.PI_ACP_SMOKE }, async t => {
   const directory = await realpath(await mkdtemp(join(tmpdir(), 'pi-acp-file-diff-')));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  cleanup(t, () => rm(directory, { recursive: true, force: true }));
   const createdPath = join(directory, 'new.txt');
   const overwrittenPath = join(directory, 'existing.txt');
   const emptyPath = join(directory, 'empty.txt');
@@ -1975,7 +1994,7 @@ for (const version of [1, 2]) {
   test(`本机 pi ACP v${version} 子 agent、后台命令与定向停止（本地模型替身）`,
     { skip: !process.env.PI_ACP_SMOKE }, async t => {
       const directory = await realpath(await mkdtemp(join(tmpdir(), 'pi-acp-tasks-')));
-      t.after(() => rm(directory, { recursive: true, force: true }));
+      cleanup(t, () => rm(directory, { recursive: true, force: true }));
       const extension = join(directory, 'tasks-model.ts');
       await writeFile(extension, `import { createAssistantMessageEventStream } from '@earendil-works/pi-ai';
       export default function (pi: any) {
@@ -2091,7 +2110,7 @@ for (const version of [1, 2]) {
 for (const version of [1, 2]) {
   test(`本机 pi ACP v${version} 转发 pi-agents 状态描述`, { skip: !process.env.PI_ACP_SMOKE }, async t => {
     const directory = await mkdtemp(join(tmpdir(), 'pi-acp-agent-state-'));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    cleanup(t, () => rm(directory, { recursive: true, force: true }));
     const extension = join(directory, 'state.ts');
     await writeFile(extension, `export default function (pi: any) {
       let sequence = 0;
@@ -2170,7 +2189,8 @@ for (const version of [1, 2]) {
   test(`本机 pi ACP v${version} 扩展桥接、递归子树及崩溃恢复后台任务`,
     { skip: !process.env.PI_ACP_SMOKE }, async t => {
       const directory = await realpath(await mkdtemp(join(tmpdir(), 'pi-acp-task-tree-')));
-      t.after(() => rm(directory, { recursive: true, force: true }));
+      // 强制终止适配器后，子进程收到管道 EOF 并释放工作目录需要一点时间。
+      cleanup(t, () => rm(directory, { recursive: true, force: true, maxRetries: 10 }));
       const extension = join(directory, 'tree.ts');
       await writeFile(extension, `import { createAssistantMessageEventStream } from '@earendil-works/pi-ai';
       import { Type } from 'typebox';

@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Agent } from '../src/agent.js';
 import { fileDiffs, fileText, MAX_DIFF_BYTES, patchDiffs, toolPath } from '../src/file-diff.js';
 
+const workspace = resolve('/workspace');
 const patch = '--- a.txt\n+++ a.txt\n@@ -2,2 +2,2 @@\n context\n-old\n+new\n@@ -20 +20 @@\n-before\n\\ No newline at end of file\n+after\n\\ No newline at end of file\n';
 
 test('编辑补丁保留多个片段、空格、CRLF 和末尾换行语义', () => {
@@ -60,17 +61,21 @@ test('文件快照区分不存在、空文件、二进制、编码错误和大�
 });
 
 test('工具位置按 pi 的路径格式解析', () => {
-  assert.equal(toolPath('/workspace', '@a.txt'), '/workspace/a.txt');
-  assert.equal(toolPath('/workspace', '~/a.txt'), join(homedir(), 'a.txt'));
-  assert.equal(toolPath('/workspace', 'a\u00A0b.txt'), '/workspace/a b.txt');
-  assert.equal(toolPath('/workspace', pathToFileURL('/tmp/a b.txt').href), '/tmp/a b.txt');
+  const absolute = join(tmpdir(), 'a b.txt');
+  assert.equal(toolPath(workspace, '@a.txt'), join(workspace, 'a.txt'));
+  assert.equal(toolPath(workspace, '~/a.txt'), join(homedir(), 'a.txt'));
+  assert.equal(toolPath(workspace, 'a\u00A0b.txt'), join(workspace, 'a b.txt'));
+  assert.equal(toolPath(workspace, pathToFileURL(absolute).href), absolute);
 });
 
 test('Air diffPatch 能力协商后发送单个 Git patch', () => {
   const records = [];
   const agent = new Agent({ send: record => records.push(record.params.update) });
   agent.airDiffPatch = true;
-  const session = { id: 'diff', cwd: '/workspace', tools: new Map(), terminals: new Map(), turn: {} };
+  const session = { id: 'diff', cwd: workspace, tools: new Map(), terminals: new Map(), turn: {} };
+  const path = join(workspace, 'a.txt');
+  const patchPath = path.split(sep).join('/').replace(/^\//, '');
+  const header = `diff --git a/${patchPath} b/${patchPath}\n`;
   const call = { toolCallId: 'edit-1', toolName: 'edit', args: { path: 'a.txt' } };
   agent.event(session, { type: 'tool_execution_start', ...call });
   agent.event(session, { type: 'tool_execution_end', ...call, isError: false,
@@ -78,16 +83,15 @@ test('Air diffPatch 能力协商后发送单个 Git patch', () => {
   const diffs = records.at(-1).content.filter(block => block.type === 'diff');
   assert.equal(diffs.length, 1);
   assert.equal(diffs[0].oldText, null);
-  assert.match(diffs[0]._meta.jetbrains.air.diffPatch.text,
-    /^diff --git a\/workspace\/a\.txt b\/workspace\/a\.txt\n--- a\/workspace\/a\.txt\n\+\+\+ b\/workspace\/a\.txt\n@@ /);
-  assert.ok(diffs[0]._meta.jetbrains.air.diffPatch.text.endsWith(patch.slice(patch.indexOf('@@'))));
-  const writeResult = { details: { patch: '@@ -0,0 +1 @@\n+new\n',
-    acpDiff: { path: '/workspace/a.txt', oldText: null, newText: 'new\n' } } };
-  session.tools.set('write-1', { title: 'write', locations: [{ path: '/workspace/a.txt' }] });
+  assert.equal(diffs[0]._meta.jetbrains.air.diffPatch.text,
+    `${header}--- a/${patchPath}\n+++ b/${patchPath}\n${patch.slice(patch.indexOf('@@'))}`);
+  const added = '@@ -0,0 +1 @@\n+new\n';
+  const writeResult = { details: { patch: added, acpDiff: { path, oldText: null, newText: 'new\n' } } };
+  session.tools.set('write-1', { title: 'write', locations: [{ path }] });
   const rendered = agent.transcript.toolResult(session, 'write-1', writeResult, false);
   assert.equal(rendered.content.length, 1);
-  assert.match(rendered.content[0]._meta.jetbrains.air.diffPatch.text,
-    /^diff --git a\/workspace\/a\.txt b\/workspace\/a\.txt\nnew file mode 100644\n--- \/dev\/null\n\+\+\+ b\/workspace\/a\.txt\n@@ /);
+  assert.equal(rendered.content[0]._meta.jetbrains.air.diffPatch.text,
+    `${header}new file mode 100644\n--- /dev/null\n+++ b/${patchPath}\n${added}`);
 });
 
 test('Air patch 支持特殊路径和空新增文件，并可由 Git 解析', () => {
@@ -115,7 +119,7 @@ test('Air patch 支持特殊路径和空新增文件，并可由 Git 解析', ()
 test('实时完成与历史回放发送相同 diff 和修改行号，部分输出和失败不发 diff', () => {
   const records = [];
   const agent = new Agent({ send: record => records.push(record.params.update) });
-  const session = { id: 'diff', cwd: '/workspace', tools: new Map(), terminals: new Map(), turn: {} };
+  const session = { id: 'diff', cwd: workspace, tools: new Map(), terminals: new Map(), turn: {} };
   const call = { toolCallId: 'edit-1', toolName: 'edit', args: { path: 'a.txt' } };
   const result = { content: [{ type: 'text', text: '编辑成功' }], details: { patch, firstChangedLine: 3 } };
   agent.event(session, { type: 'tool_execution_start', ...call });
@@ -124,7 +128,7 @@ test('实时完成与历史回放发送相同 diff 和修改行号，部分输�
   agent.event(session, { type: 'tool_execution_end', ...call, result, isError: false });
   const completed = records.at(-1);
   assert.equal(completed.content.filter(block => block.type === 'diff').length, 2);
-  assert.deepEqual(completed.locations, [{ path: '/workspace/a.txt', line: 3 }]);
+  assert.deepEqual(completed.locations, [{ path: join(workspace, 'a.txt'), line: 3 }]);
   assert.equal(completed.rawOutput, result);
   assert.equal(session.tools.size, 0);
   agent.transcript.replay(session, { type: 'message', message: { role: 'assistant', content: [

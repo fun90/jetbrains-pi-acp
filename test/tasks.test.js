@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { getShellConfig } from '@earendil-works/pi-coding-agent';
 import assert from 'node:assert/strict';
 import { tmpdir } from 'node:os';
 import { mkdtemp, rm, mkdir, writeFile, access } from 'node:fs/promises';
@@ -30,7 +31,7 @@ async function setup(capabilities = {}) {
 const air = { _meta: { terminal_output_delta: true, jetbrains: { air: {
   version: 1, capabilities: ['nativeSubagentSessions', 'asyncTasks'],
 } } } };
-const shell = { shell: '/bin/sh', args: ['-c'] };
+const shell = process.platform === 'win32' ? getShellConfig() : { shell: '/bin/sh', args: ['-c'] };
 
 test('子 agent 能力协商支持标准字段、Air 后备与旧客户端', async () => {
   for (const [capabilities, expected] of [[{}, false], [{ subagents: {} }, true], [air, true],
@@ -311,7 +312,8 @@ test('后台输出分别解码 stdout/stderr 的分段 UTF-8，无输入时提�
   const task = agent.tasks.tasks.get(result.taskId);
   await task.completion;
   assert.equal(task.state, 'completed');
-  assert.equal(task.output, '!你');
+  // 两条独立管道可能按不同顺序交付，但多字节字符必须完整。
+  assert.match(task.output, /^(?:!你|你!)$/u);
 });
 
 test('父进程退出且历史不可写时仍关闭子会话', async () => {
@@ -621,9 +623,11 @@ async function notifySetup() {
 
 test('后台命令结束后合并发送一条完成通知，只带去除控制字符的末尾输出', async () => {
   const { parent, notices, run, flush } = await notifySetup();
+  parent.turn = { cancelled: false };
   const first = await run('printf "\\033[31m%03000d完成\\033[0m" 0', 'shell-ok');
   assert.equal(first.notifyOnExit, true);
   await run('exit 7', 'shell-failed');
+  parent.turn = null;
   await flush();
   assert.equal(notices.length, 1);
   assert.equal(notices[0].wake, true);

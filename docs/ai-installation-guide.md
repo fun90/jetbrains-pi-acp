@@ -22,7 +22,7 @@ IDEA MCP Server → ACP 转发 → Pi → 项目、代码、构建与调试工�
 ## 安装要求
 
 - Node.js 至少 `22.19.0`，IDEA 启动的 Pi 也必须能找到 Node.js。
-- Pi 使用 `@earendil-works/pi-coding-agent`，以下命令安装 `1.5.2`。
+- Pi 使用 `@earendil-works/pi-coding-agent`，以下命令安装 `1.6.1`。
 - Magpie 使用与目标 OS、CPU 匹配的官方发行包，配置目标账号可用的模型。
 - IntelliJ IDEA 与 Air 插件（ID `com.intellij.air`）需支持自定义 ACP；IDEA 需提供 MCP Server。
 - ACP 源码仓库：`https://github.com/fun90/jetbrains-pi-acp.git` ，无需构建；源码安装后先运行 `npm ci`，默认使用随依赖安装的 pi。
@@ -61,12 +61,12 @@ export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"
 把同样的 PATH 增补写入当前用户实际使用的 shell 配置；已有相同条目则不重复添加。重新打开终端验证。不要对 nvm 等版本管理器强行设置这个 npm 前缀，应遵循其既有安装布局。
 
 ```bash
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.5.2
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.6.1
 pi --version
 command -v pi
 ```
 
-预期 `pi --version` 为 `1.5.2`。此 npm 安装固定 Pi 主包版本，未固定所有传递依赖。
+预期 `pi --version` 为 `1.6.1`。此 npm 安装固定 Pi 主包版本，未固定所有传递依赖。
 
 Pi 官方也提供 `https://pi.dev/install.sh` 和 Windows 的 `https://pi.dev/install.ps1` 安装器；使用它们前读取当前官方说明，确认安装版本，不要重复安装出两套 Pi。
 

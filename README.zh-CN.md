@@ -4,7 +4,7 @@
 
 通过 ACP 将 [pi coding agent](https://github.com/earendil-works/pi) 连接到 JetBrains IDE，支持历史会话、权限控制、文件 diff、子 agent 和后台任务。
 
-需要 **Node.js 22.19.0+** 和支持 ACP 的 JetBrains IDE，例如安装了 Air 插件（`com.intellij.air`）的 IntelliJ IDEA。npm 包自带 pi `1.5.2`，无需全局安装 pi，也无需构建。
+需要 **Node.js 22.19.0+** 和支持 ACP 的 JetBrains IDE，例如安装了 Air 插件（`com.intellij.air`）的 IntelliJ IDEA。npm 包自带 pi `1.6.1`，无需全局安装 pi，也无需构建。
 
 ## 快速开始
 
