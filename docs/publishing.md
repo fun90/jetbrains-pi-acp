@@ -16,7 +16,7 @@ npm pack
 
 普通测试使用本地替身；`PI_ACP_SMOKE=1 npm test` 默认通过适配器的 CLI 使用本项目锁定的 pi，也可设置 `PI_ACP_PI_COMMAND` 为外部 pi 的绝对路径。测试使用本地模型替身，不调用远端模型。
 
-检查包文件列表：应包含 `src/`、`extensions/`、`scripts/`、`examples/`、`package.json`、README 和许可证，不应包含测试、临时文件、IDE 配置或用户凭据。pi `1.6.1` 与 `typebox` 作为 npm 依赖安装，不嵌入压缩包。固定 pi 版本可避免其接口更新直接破坏适配器。
+检查包文件列表：应包含 `src/`、`extensions/`、`scripts/`、`examples/`、`package.json`、README 和许可证，不应包含测试、临时文件、IDE 配置或用户凭据。pi `1.6.1` 作为 npm 依赖安装，不嵌入压缩包。固定 pi 版本可避免其接口更新直接破坏适配器。
 
 在项目外的空目录安装生成的压缩包，再通过安装后的命令验证，避免错误地使用源码或全局 pi：
 
@@ -26,11 +26,11 @@ npm install /绝对路径/jetbrains-pi-acp/jetbrains-pi-acp-X.Y.Z.tgz
 ./node_modules/.bin/jetbrains-pi-acp --setup
 ```
 
-在 pi 终端中输入 `/login` 选择模型提供商，登录完成后退出。API Key 与 OAuth 的存储、更新和退出均由 pi 处理，适配器不另存凭据。v2 的 `auth/logout` 关闭当前连接的会话并阻止该连接继续使用，需要重新连接；提供商凭据仍由用户在 pi 的 `/logout` 中管理。`--setup` 使用交互终端，不是无界面的登录命令；退出后通过 IDE 建立新会话验证实际模型调用。
+在 pi 终端中输入 `/login` 选择模型提供商，登录完成后退出。API Key 与 OAuth 的存储、更新和退出均由 pi 处理，适配器不另存凭据；退出登录在 pi 中执行 `/logout`。`--setup` 使用交互终端，不是无界面的登录命令；退出后通过 IDE 建立新会话验证实际模型调用。
 
 登录入口透传 pi 的退出码，不独立校验凭据：直接退出 pi 也可能返回成功状态，因此应先完成 `/login`，再退出。当前不自动选择提供商、不发起付费模型调用验证密钥。
 
-默认启动随依赖安装的 pi，不依赖全局 `pi`。如需外部版本，使用 `--pi-command /绝对路径/pi` 或 `PI_ACP_PI_COMMAND`。终端认证按客户端能力协商：v1 支持 `auth.terminal: true` 或旧 `_meta["terminal-auth"]: true`，v2 支持 `auth.terminal: {}`。标准认证描述通过 `PI_ACP_SETUP=1` 保留原始启动参数，旧扩展则返回完整的替换参数。自定义版本需要自行验证兼容性。
+默认启动随依赖安装的 pi，不依赖全局 `pi`。如需外部版本，使用 `--pi-command <pi 可执行文件或 .js 入口>` 或 `PI_ACP_PI_COMMAND`；Windows 上使用 `.js` 入口。客户端声明 `auth.terminal: true` 时提供终端认证方式，通过环境变量 `PI_ACP_SETUP=1` 进入登录模式并保留原始启动参数。自定义版本需要自行验证兼容性。
 
 ## 一次性配置 Trusted Publishing
 
@@ -109,6 +109,6 @@ npm view jetbrains-pi-acp dist-tags --json
 
 更新 `package.json`、`package-lock.json`、`registry/jetbrains-pi-acp/agent.json` 以及 README 和使用示例中的固定版本，重新测试并通过版本 tag 发布。握手中的 Agent 名称和版本直接读取 `package.json`。官方 Registry 会定时检查 npm 新版本；描述、图标、分发方式等变更仍需提交 PR。
 
-当前不提供二进制发行包或预览通道。CI 验证 Linux；Windows 和 macOS 的 IDE、shell 与终端交互仍需实机验证。
+当前不提供二进制发行包或预览通道。CI 在 Linux、Windows 和 macOS 上运行测试；IDE 界面和真实提供商登录仍需实机验证。
 
 规范依据：[提交要求](https://github.com/agentclientprotocol/registry/blob/main/CONTRIBUTING.md)、[认证要求](https://github.com/agentclientprotocol/registry/blob/main/AUTHENTICATION.md)、[清单 Schema](https://github.com/agentclientprotocol/registry/blob/main/agent.schema.json)。
