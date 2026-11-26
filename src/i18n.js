@@ -98,6 +98,16 @@ const zh = {
   statusContext: '上下文：{tokens} / {window}',
   statusContextUnavailable: '上下文：不可用',
 
+  // 后台任务面板
+  backgroundEntry: '后台任务：{label}（{status}）',
+  backgroundElapsed: '{status}，{seconds} 秒',
+  backgroundRunning: '运行中',
+  backgroundSucceeded: '已完成',
+  backgroundFailed: '失败',
+  backgroundCancelled: '已取消',
+  backgroundTimedOut: '超时',
+  backgroundOutputLimit: '输出超限',
+
   // pi 进程
   piExited: 'pi 已退出（{reason}）',
   piOutputInvalid: 'pi 输出无效：{error}',
@@ -196,6 +206,15 @@ const en = {
   statusTokens: 'Total tokens: {tokens}, cost: ${cost}',
   statusContext: 'Context: {tokens} / {window}',
   statusContextUnavailable: 'Context: unavailable',
+
+  backgroundEntry: 'Background task: {label} ({status})',
+  backgroundElapsed: '{status}, {seconds}s',
+  backgroundRunning: 'running',
+  backgroundSucceeded: 'succeeded',
+  backgroundFailed: 'failed',
+  backgroundCancelled: 'cancelled',
+  backgroundTimedOut: 'timed out',
+  backgroundOutputLimit: 'output limit reached',
 
   piExited: 'pi exited ({reason})',
   piOutputInvalid: 'Invalid pi output: {error}',

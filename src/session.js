@@ -16,6 +16,9 @@ const MODES = { plan: 'modePlan', 'read-only': 'modeReadOnly', standard: 'modeSt
 const RESTRICTED = ['plan', 'read-only'];
 const LOCAL_COMMANDS = /^\/(status|compact|reload)(?:\s|$)/;
 const modelKey = model => `${model.provider}/${model.id}`;
+// pi-background-tasks 的任务状态 → i18n key。
+const BACKGROUND_STATUS = { running: 'backgroundRunning', succeeded: 'backgroundSucceeded', failed: 'backgroundFailed',
+  cancelled: 'backgroundCancelled', timed_out: 'backgroundTimedOut', output_limit: 'backgroundOutputLimit' };
 
 // 一个 ACP 会话，对应一个 pi RPC 子进程。负责配置、提示回合、pi 事件到 session/update 的转换和历史回放。
 export class Session {
@@ -29,6 +32,7 @@ export class Session {
     this.tools = new Map();
     this.allowedTools = new Set();
     this.blocks = new Map();
+    this.background = new Map();
     this.messageId = randomUUID();
   }
 
@@ -169,6 +173,7 @@ export class Session {
   async prompt(blocks) {
     if (this.failure) throw this.failure;
     if (this.busy) throw invalid(t('promptRunning'));
+    this.clearFinishedBackground();
     const prompt = convertPrompt(blocks);
     const text = prompt.message.trim();
     if (!prompt.images && LOCAL_COMMANDS.test(text)) return this.local(text);
@@ -310,6 +315,7 @@ export class Session {
       }
       case 'message_end': {
         const message = event.message;
+        if (message?.role === 'custom' && message.customType === 'background-task-finished') this.trackBackground(message.details);
         if (message?.role !== 'assistant') break;
         // 补发未流式输出的部分，例如不支持流式的提供商。
         for (const [index, block] of (message.content ?? []).entries()) {
@@ -339,6 +345,7 @@ export class Session {
           status: !done ? 'in_progress' : event.isError ? 'failed' : 'completed',
           ...toolResult(this.cwd, tool.name, tool.args, done ? event.result : event.partialResult, event.isError, done) });
         if (done) this.tools.delete(event.toolCallId);
+        if (done && tool.name === 'background_task' && !event.isError) this.trackBackground(event.result?.details);
         break;
       }
       case 'compaction_start':
@@ -380,6 +387,43 @@ export class Session {
     this.update({ sessionUpdate: 'compaction_update', compactionId, status,
       ...(typeof summary === 'string' ? { summary: [{ type: 'text', text: summary }] } : {}),
       ...(status === 'failed' && error ? { error } : {}) });
+  }
+
+  // ---- 后台任务 ----
+
+  // pi-background-tasks 的启动/查询结果和完成通知带有任务快照，转成 ACP 计划显示在输入框上方。
+  trackBackground(details) {
+    const tasks = [details?.task, ...(Array.isArray(details?.tasks) ? details.tasks : [])]
+      .filter(task => typeof task?.id === 'string' && Object.hasOwn(BACKGROUND_STATUS, task.status));
+    let changed = false;
+    for (const task of tasks) {
+      // list 会带回早已结束的历史任务，只跟踪运行中出现过的任务。
+      if (!this.background.has(task.id) && task.status !== 'running') continue;
+      this.background.set(task.id, task);
+      changed = true;
+    }
+    if (changed) this.publishBackground();
+  }
+
+  // 已结束的任务保留到用户下一次提问。
+  clearFinishedBackground() {
+    let changed = false;
+    for (const [id, task] of this.background) {
+      if (task.status !== 'running') changed = this.background.delete(id);
+    }
+    if (changed) this.publishBackground();
+  }
+
+  publishBackground() {
+    const entries = [...this.background.values()].map(task => {
+      const status = t(BACKGROUND_STATUS[task.status]);
+      const finished = task.status !== 'running';
+      return { priority: 'medium', status: finished ? 'completed' : 'in_progress',
+        content: t('backgroundEntry', { label: task.description || task.id,
+          status: finished && Number.isFinite(task.elapsed_seconds)
+            ? t('backgroundElapsed', { status, seconds: Math.round(task.elapsed_seconds) }) : status }) };
+    });
+    this.update({ sessionUpdate: 'plan', entries });
   }
 
   // ---- 扩展 UI ----

@@ -41,6 +41,7 @@ The IDE must be able to find `npx`; use its absolute path if needed. Menu locati
 - Native pi session history: list, load (with replay), resume, close, and delete sessions.
 - Session settings for model, reasoning level, and permission mode (full access, standard, read-only, plan).
 - File diffs for the built-in `edit` and `write` tools, shown live and when replaying history.
+- With the [`pi-background-tasks`](https://www.npmjs.com/package/@maxiaochao/pi-background-tasks) extension installed, background tasks appear above the chat input as an ACP plan (`plan`): running after start, then the result and duration once the completion notice arrives. Finished tasks are cleared on the next prompt.
 - stdio and HTTP MCP servers from the client, including IDE tools.
 - Local commands: `/status` shows the model, permission mode, tokens, cost, and context usage; `/compact [instructions]` compacts the context; `/reload` reloads pi models, extensions, skills, and prompts. pi extension commands, prompt templates, and skills appear in the command list.
 - pi extension dialogs (confirm, select, input) become ACP form elicitations when the client supports them; otherwise they are cancelled. Option numbers added by the extension (such as `1. `) are removed because the client numbers options itself, and plain-text previews in the title are shown in code blocks. Extension notifications become `notice` updates when supported, or reply text during a turn.
@@ -70,7 +71,7 @@ Restart the agent connection after updating the adapter or changing startup opti
 ## Limitations
 
 - Tools execute locally through pi; ACP client-side `fs/*` and `terminal/*` are not used. Save editor buffers before asking the agent to read or change files.
-- Commands run without interactive input. There are no subagents, background tasks, session forking, or steering into a running turn; a prompt sent while one is running is rejected.
+- Commands run without interactive input. The adapter itself provides no subagents or background tasks, and there is no session forking or steering into a running turn; a prompt sent while one is running is rejected.
 - Diffs have size limits and may be unavailable for binary files or concurrent writes to the same file.
 - MCP SSE, audio, and binary embedded resources are unsupported. Image support depends on the model.
 - RPC does not support custom terminal panels from extensions.

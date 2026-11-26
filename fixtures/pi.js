@@ -73,6 +73,28 @@ function run(message) {
     return send({ type: 'extension_ui_request', id: 'ui-1', method: 'confirm', title: 'PI_ACP_PERMISSION',
       message: JSON.stringify({ toolCallId: 'call-1', toolName: 'write', args }) });
   }
+  if (message === 'background') {
+    // 模拟 pi-background-tasks：启动结果带任务快照，完成后以自定义消息唤醒一次运行。
+    const task = { id: 'bg-1', status: 'running', description: '构建', elapsed_seconds: 0 };
+    const args = { action: 'start', command: 'sleep 10' };
+    send({ type: 'tool_execution_start', toolCallId: 'call-bg', toolName: 'background_task', args });
+    send({ type: 'tool_execution_end', toolCallId: 'call-bg', toolName: 'background_task', isError: false,
+      result: { content: [{ type: 'text', text: 'Started bg-1' }], details: { action: 'start', task } } });
+    reply('已启动');
+    settle(false);
+    timer = setTimeout(() => {
+      active = true;
+      send({ type: 'agent_start' });
+      const finished = { ...task, status: 'succeeded', elapsed_seconds: 10.2, exit_code: 0 };
+      const notice = { role: 'custom', customType: 'background-task-finished', content: [], display: true,
+        details: { tasks: [finished], task: finished } };
+      send({ type: 'message_start', message: notice });
+      send({ type: 'message_end', message: notice });
+      reply('任务完成');
+      settle(false);
+    }, 30);
+    return;
+  }
   if (message === 'ask') {
     pendingUi = { id: 'ui-2', kind: 'ask' };
     return send({ type: 'extension_ui_request', id: 'ui-2', method: 'select', title: '选一个', options: ['甲', '乙'] });
