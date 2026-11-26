@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Connect the [pi coding agent](https://github.com/earendil-works/pi) to JetBrains IDEs through ACP, with session history, permission controls, file diffs, subagents, and background tasks.
+Connect the [pi coding agent](https://github.com/earendil-works/pi) to JetBrains IDEs through ACP, with session history, permission modes, and file diffs. It implements the stable ACP v1 protocol and runs on Windows, macOS, and Linux.
 
 Requires **Node.js 22.19.0+** and a JetBrains IDE with ACP support, such as IntelliJ IDEA with the Air plugin (`com.intellij.air`). The npm package includes pi `1.6.1`; no global pi installation or build step is required.
 
@@ -37,19 +37,17 @@ The IDE must be able to find `npx`; use its absolute path if needed. Menu locati
 
 ## Features
 
-- `/goal <objective>` and `/goal resume` continue automatically until the model verifies completion and calls `goal_complete` to clear the goal. After 20 unfinished rounds, execution pauses; use `/goal resume` to continue. Stop cancels execution; `/goal pause` or pausing in the Air goal panel prevents further rounds. Completion is judged by the executing model, without an independent auditor. Setting or resuming a goal in the Air panel only updates its state; send `/goal resume` to start execution.
-- ACP v1 and v2 draft support, with streaming responses, reasoning, tool status, terminal output, and usage reporting.
-- Native pi session history: list, load, resume, rename, fork, and delete sessions. Use `/tree` to view the session tree in a selection form and switch context while preserving previous branches. Selecting a user message returns to before it was sent and shows the original text for resending (reattach any attachments). Switching does not revert files, remove existing IDE messages, or generate a branch summary. Clients without form support only display the tree.
-- Model and reasoning-level selection, plus full-access, standard, read-only, and plan modes.
-- UI text (config names, mode and command descriptions, permission options, errors) follows the system language: Chinese for `zh*` locales, English otherwise, based on the first non-empty `LC_ALL`, `LC_MESSAGES`, or `LANG`, falling back to the system locale. Tool descriptions and system prompts sent to the model are always English. Restart the adapter after changing the language.
-- File diffs for built-in `edit`/`write` tools, with optional Air Git patches and per-turn file reports. File report snapshots follow Git ignore rules, including `.gitignore`, while retaining tracked files; non-Git projects or systems without Git use filesystem scanning that skips common dependency, build, and cache directories such as `node_modules/`, `vendor/`, `target/`, `build/`, `dist/`, `coverage/`, `.cache/`, and `.venv/`, including nested directories. Snapshots always skip `.DS_Store`.
-- stdio/HTTP MCP forwarding, including IDE tools; subagents and background shell tasks with targeted cancellation.
-- Task tools return a stable handle (`provider`, `taskId`, `sessionId`, owner session) plus `nextTools`. `task_status` accepts a taskId or subagent sessionId, lists tasks when called without one, and takes `waitSeconds` (max 60, repeatable) instead of shell sleeps; subagents may read ancestor sessions' tasks but never stop them. `stop_task` reports the actual final state, output, and whether only leftover descendants were stopped; it does not revert files. Unknown task IDs and actions list the valid options. The adapter does not control pi's native `agent_*` tools or `pi-agents` IDs, nor the browser/MCP tool routing.
-- When a main-session `background_shell` command exits on its own (success or failure), the model is notified automatically in a new turn, so no polling is needed; `notifyOnExit` in the result marks this. Delivery waits for a busy session to become idle, merges tasks that finish together, and carries only the output tail. No notice is sent for tasks whose final state was already read via `task_status`/`stop_task`, stopped tasks, tasks whose launch is not on the current branch, or tasks restored after an adapter restart; if the launching turn was cancelled or the session is read-only/plan, the notice is only added to context. Commands inside subagent sessions still use `task_status` to wait. A normal prompt sent while such a self-started turn is running is queued into it (local commands are still rejected).
-- When `pi-agents` is installed, its child agents appear as read-only tasks in Air clients with `asyncTasks`, showing running and waiting for dependencies. Completed, failed, or stopped agents leave the active list. The extension's current state snapshots do not expose tool details or completion percentages.
-- Steering, terminal stdin, forms, and URL interactions when supported by the client. Air v1 provides `/stdin text` and `/eof` during command execution. Ordinary messages sent during a running Air v1 turn are queued as follow-ups; their prompt responses wait for the turn to finish.
+- Stable ACP v1: streaming responses and reasoning, tool call status and output, context usage and cost (`usage_update`).
+- Native pi session history: list, load (with replay), resume, close, and delete sessions.
+- Session settings for model, reasoning level, and permission mode (full access, standard, read-only, plan).
+- File diffs for the built-in `edit` and `write` tools, shown live and when replaying history.
+- stdio and HTTP MCP servers from the client, including IDE tools.
+- Local commands: `/status` shows the model, permission mode, tokens, cost, and context usage; `/compact [instructions]` compacts the context; `/reload` reloads pi models, extensions, skills, and prompts. pi extension commands, prompt templates, and skills appear in the command list.
+- pi extension dialogs (confirm, select, input) become ACP form elicitations when the client supports them; otherwise they are cancelled. Extension notifications become `notice` updates when supported, or reply text during a turn.
+- Terminal sign-in (`auth.terminal`): the client reruns the adapter with `PI_ACP_SETUP=1` to open pi for `/login`. A new session returns an authentication-required error (`-32000`) when pi has no usable model.
+- UI text follows the system language: Chinese for `zh*` locales, English otherwise, based on the first non-empty `LC_ALL`, `LC_MESSAGES`, or `LANG`, falling back to the system locale. Prompts sent to the model are always English. Restart the adapter after changing the language.
 
-**Full access is the default and automatically permits tool calls.** Standard mode requests approval for tools other than built-in read-only tools; read-only and plan modes reject those tools. Permission modes are not an OS sandbox, and installed pi extensions remain trusted code. Client capabilities determine which features are available.
+**Full access is the default and automatically permits tool calls.** Standard mode asks before each tool other than the built-in read-only tools (`read`, `grep`, `find`, `ls`); "Always allow" applies to that tool for the rest of the session. Read-only and plan modes reject those tools, and plan mode also tells the model to only produce a plan. Permission modes are not an OS sandbox, and installed pi extensions remain trusted code.
 
 ## Configuration
 
@@ -61,23 +59,21 @@ Append pi options after `--` in the agent's `args`, for example:
 
 Use configuration options here, not initial prompts, interactive mode, or session-selection arguments. The adapter manages RPC mode and sessions.
 
-To use an external pi executable, add `--pi-command /absolute/path/to/pi` before `--`, or set `PI_ACP_PI_COMMAND`. Verify compatibility when using other pi versions.
+To use an external pi, add `--pi-command <path>` before `--`, or set `PI_ACP_PI_COMMAND`. The path can be an executable or a `.js` entry such as `.../pi-coding-agent/dist/cli.js`; `.js` entries run with the adapter's Node.js. On Windows, pass the `.js` entry, because npm's `.cmd` wrappers cannot be started directly. Verify compatibility when using other pi versions.
 
-Sessions use pi's native storage, normally `~/.pi/agent/sessions/`, and respect pi's session-directory settings. History is filtered by the project working directory. Avoid accessing the same session simultaneously from multiple adapters or from pi and the IDE.
+Sessions use pi's native storage, normally `~/.pi/agent/sessions/`, and respect `--session-dir`, `PI_CODING_AGENT_SESSION_DIR`, and the `sessionDir` setting. Avoid accessing the same session simultaneously from multiple adapters or from pi and the IDE.
 
-The first time you open a historical session after restarting ACP, pi reads its current configuration, including newly added models, extensions, skills, and prompts. For an open session, send `/reload` to refresh configuration and the IDE's model and command lists. Historical sessions retain their selected model and reasoning level; changing the default model in `settings.json` does not switch an existing session. Select the new model in the IDE's model menu. Custom models normally live in `~/.pi/agent/models.json`, or under `PI_CODING_AGENT_DIR` when set. Authentication for added models must also be available to the pi process launched by the IDE.
+Loading or resuming a session starts a new pi process that reads the current configuration, including the MCP servers sent by the client. For an open session, send `/reload` to refresh models, extensions, skills, and prompts. Custom models normally live in `~/.pi/agent/models.json`, or under `PI_CODING_AGENT_DIR` when set; their authentication must also be available to the pi process launched by the IDE.
 
 Restart the agent connection after updating the adapter or changing startup options.
 
 ## Limitations
 
-- Tools execute locally through pi; ACP client-side `fs/*` and `terminal/*` execution is not implemented. Save editor buffers before asking the agent to read or change files.
-- Terminal input uses stdin pipes, not a PTY. Full-screen apps and TTY password prompts are unsupported; background tasks have no stdin input.
-- Only commands the model runs with `interactive: true` accept input. Other commands get an empty stdin (`/dev/null`) like native pi, so commands that read stdin by mistake exit instead of hanging.
-- Diffs have size limits and may be unavailable for binary files or older history. File reports scan at most 20,000 entries or two seconds per snapshot and cannot reliably attribute concurrent external changes.
+- Tools execute locally through pi; ACP client-side `fs/*` and `terminal/*` are not used. Save editor buffers before asking the agent to read or change files.
+- Commands run without interactive input. There are no subagents, background tasks, session forking, or steering into a running turn; a prompt sent while one is running is rejected.
+- Diffs have size limits and may be unavailable for binary files or concurrent writes to the same file.
 - MCP SSE, audio, and binary embedded resources are unsupported. Image support depends on the model.
-- RPC does not support custom terminal panels from extensions. With `pi-mcp-adapter`, `/mcp` falls back to text status, and command notifications appear in chat; these notifications are not saved in pi session history.
-- ACP v2 follows a draft schema. Client UI behavior, real provider sign-in, and Windows hardware still need verification.
+- RPC does not support custom terminal panels from extensions.
 
 ## Development
 

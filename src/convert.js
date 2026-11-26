@@ -1,41 +1,40 @@
-import { isAbsolute } from 'node:path';
-import { invalid } from './shared.js';
+import { invalid } from './errors.js';
 import { t } from './i18n.js';
 
-// ACP 请求参数到 pi 配置与提示的转换，纯函数。
-export function convertMcp(servers) {
+const pairs = (list, message) => {
+  if (list === undefined || list === null) return {};
+  if (!Array.isArray(list) || list.some(item => typeof item?.name !== 'string' || typeof item.value !== 'string')) {
+    throw invalid(message);
+  }
+  return Object.fromEntries(list.map(item => [item.name, item.value]));
+};
+
+// ACP mcpServers 转成 pi.registerMcpServer 的配置；名称归一后不得重复。
+export function convertMcp(servers = []) {
   if (!Array.isArray(servers)) throw invalid(t('mcpServersArray'));
-  const result = Object.create(null);
+  const result = {};
   const names = new Set();
   for (const server of servers) {
-    if (!server || typeof server.name !== 'string' || !/^[\w-]+$/.test(server.name)) {
-      throw invalid(t('mcpNameInvalid'));
-    }
+    if (typeof server?.name !== 'string' || !/^[\w-]+$/.test(server.name)) throw invalid(t('mcpNameInvalid'));
     const key = server.name.replaceAll('-', '_');
     if (names.has(key)) throw invalid(t('mcpNameDuplicate'));
     names.add(key);
     if (server.type === 'http') {
-      if (typeof server.url !== 'string' || !/^https?:\/\//.test(server.url) ||
-          !Array.isArray(server.headers) || server.headers.some(h =>
-            !h || typeof h.name !== 'string' || typeof h.value !== 'string')) {
-        throw invalid(t('httpMcpInvalid'));
-      }
-      result[server.name] = { url: server.url,
-        headers: Object.fromEntries(server.headers.map(h => [h.name, h.value])), exposure: 'direct' };
-    } else if (!server.type || server.type === 'stdio') {
-      if (typeof server.command !== 'string' || !isAbsolute(server.command) ||
-          !Array.isArray(server.args) || server.args.some(a => typeof a !== 'string') ||
-          !Array.isArray(server.env) || server.env.some(e =>
-            !e || typeof e.name !== 'string' || typeof e.value !== 'string')) {
+      if (typeof server.url !== 'string' || !/^https?:\/\//.test(server.url)) throw invalid(t('httpMcpInvalid'));
+      result[server.name] = { url: server.url, headers: pairs(server.headers, t('httpMcpInvalid')), exposure: 'direct' };
+    } else if (server.type === undefined || server.type === 'stdio') {
+      if (typeof server.command !== 'string' || !server.command ||
+          (server.args != null && (!Array.isArray(server.args) || server.args.some(arg => typeof arg !== 'string')))) {
         throw invalid(t('stdioMcpInvalid'));
       }
-      result[server.name] = { command: server.command, args: server.args,
-        env: Object.fromEntries(server.env.map(e => [e.name, e.value])), exposure: 'direct' };
+      result[server.name] = { command: server.command, args: server.args ?? [],
+        env: pairs(server.env, t('stdioMcpInvalid')), exposure: 'direct' };
     } else throw invalid(t('mcpTransportUnsupported', { type: server.type }));
   }
   return result;
 }
 
+// ACP 提示内容块转成 pi prompt 命令的 message 与 images。
 export function convertPrompt(blocks) {
   if (!Array.isArray(blocks) || !blocks.length) throw invalid(t('promptEmpty'));
   const text = [];

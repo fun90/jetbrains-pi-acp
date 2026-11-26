@@ -38,7 +38,7 @@ export async function fileText(path) {
   }
 }
 
-// ACP v1 的编辑 diff 与 codex-acp 一样，每个补丁片段分别携带旧文本和新文本。
+// edit 工具的统一补丁按片段转成 ACP diff，每个片段分别携带旧文本和新文本。
 export function patchDiffs(patch, path) {
   if (typeof patch !== 'string' || Buffer.byteLength(patch) > MAX_DIFF_BYTES) return [];
   const diffs = [];
@@ -71,32 +71,11 @@ export function patchDiffs(patch, path) {
   return diffs.map(({ oldCount, newCount, ...diff }) => diff);
 }
 
-export function gitPatch(path, result) {
-  const patch = result?.details?.patch;
+// write 使用扩展记录的写入前后全文，edit 使用 pi 生成的补丁；结果带 line 供定位。
+export function fileDiffs(name, path, result, isError = false) {
+  if (isError || !path || !['edit', 'write'].includes(name)) return [];
   const snapshot = result?.details?.acpDiff;
-  if (typeof patch !== 'string' || Buffer.byteLength(patch) > MAX_DIFF_BYTES) return undefined;
-  const start = patch.search(/^@@ /m);
-  const added = snapshot?.oldText === null;
-  if (start < 0 && !(added && snapshot.newText === '')) return undefined;
-  const name = (process.platform === 'win32' ? path.replaceAll('\\', '/') : path).replace(/^\/+/, '');
-  const quote = value => /["\\\x00-\x1f\x7f]/.test(value)
-    ? '"' + value.replace(/["\\\x00-\x1f\x7f]/g, character => {
-      if (character === '"' || character === '\\') return '\\' + character;
-      return '\\' + character.charCodeAt(0).toString(8).padStart(3, '0');
-    }) + '"' : value;
-  const oldPath = quote(`a/${name}`);
-  const newPath = quote(`b/${name}`);
-  const header = value => value.includes(' ') && !value.startsWith('"') ? value + '\t' : value;
-  const text = `diff --git ${oldPath} ${newPath}\n` + (added ? 'new file mode 100644\n' : '') +
-    (start < 0 ? '' : `--- ${added ? '/dev/null' : header(oldPath)}\n+++ ${header(newPath)}\n${patch.slice(start)}`);
-  return Buffer.byteLength(text) <= MAX_DIFF_BYTES ? { text, kind: added ? 'add' : 'update' } : undefined;
-}
-
-export function fileDiffs(tool, result, isError = false) {
-  if (isError || !tool?.locations?.[0] || !['edit', 'write'].includes(tool.title)) return [];
-  const { path } = tool.locations[0];
-  const snapshot = result?.details?.acpDiff;
-  if (tool.title === 'write') {
+  if (name === 'write') {
     if (!snapshot || snapshot.path !== path ||
         !(snapshot.oldText === null || typeof snapshot.oldText === 'string') ||
         typeof snapshot.newText !== 'string' ||

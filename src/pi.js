@@ -2,39 +2,24 @@ import { spawn } from 'node:child_process';
 import { readJsonl, writeJsonl } from './jsonl.js';
 import { t } from './i18n.js';
 
+// 一个 pi RPC 子进程：stdin 发命令，stdout 收响应和事件，stderr 原样转给适配器的 stderr。
 export class PiProcess {
-  constructor({ command, args, cwd, configPath, onEvent, onFailure, onControl }) {
+  constructor({ command, args, cwd, env, onEvent, onFailure }) {
     this.pending = new Map();
     this.sequence = 0;
     this.closed = false;
-    this.child = spawn(command, args, {
-      cwd, env: { ...process.env, PI_ACP_CONFIG: configPath },
-      // Windows 上，同步双工管道的挂起读取会阻塞 pi 主动发出的控制请求。
-      stdio: ['pipe', 'pipe', 'pipe', process.platform === 'win32' ? 'overlapped' : 'pipe'],
-    });
+    this.closing = false;
+    this.onFailure = onFailure;
+    this.child = spawn(command, args, { cwd, env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true });
     this.child.stderr.pipe(process.stderr, { end: false });
-    this.child.stdin.on('error', error => this.fail(error, onFailure));
-    this.child.on('error', error => this.fail(error, onFailure));
-    this.child.on('exit', (code, signal) => {
-      this.fail(new Error(t('piExited', { reason: signal ?? code })), error => {
-        if (!this.closing) onFailure(error);
-      });
-    });
-    this.child.stdio[3].on('error', error => this.fail(error, onFailure));
-    readJsonl(this.child.stdio[3], record => {
-      if (record.type === 'acp_task_request') void onControl?.(record);
-      else this.response(record);
-    },
-      error => this.fail(new Error(t('controlChannelInvalid', { error: error.message })), onFailure));
+    this.child.stdin.on('error', error => this.fail(error));
+    this.child.on('error', error => this.fail(error));
+    this.child.on('exit', (code, signal) => this.fail(new Error(t('piExited', { reason: signal ?? code }))));
     readJsonl(this.child.stdout, record => {
       if (record.type === 'response') this.response(record);
       else onEvent(record);
-    }, error => this.fail(new Error(t('piOutputInvalid', { error: error.message })), onFailure));
-  }
-
-  controlResponse(id, data, error) {
-    if (!this.closed) writeJsonl(this.child.stdio[3], { type: 'acp_task_response', id,
-      success: !error, ...(error ? { error: error.message } : { data }) });
+    }, error => this.fail(new Error(t('piOutputInvalid', { error: error.message }))));
   }
 
   response(record) {
@@ -46,7 +31,7 @@ export class PiProcess {
     else request.reject(new Error(record.error || t('piCommandFailed')));
   }
 
-  fail(error, onFailure) {
+  fail(error) {
     if (this.closed) return;
     this.closed = true;
     for (const request of this.pending.values()) {
@@ -54,7 +39,7 @@ export class PiProcess {
       request.reject(error);
     }
     this.pending.clear();
-    onFailure(error);
+    if (!this.closing) this.onFailure(error);
     this.child.kill();
   }
 
@@ -63,21 +48,15 @@ export class PiProcess {
     writeJsonl(this.child.stdin, record);
   }
 
-  request(type, params = {}) {
+  request(type, params = {}, timeout = 30000) {
     return new Promise((resolve, reject) => {
       const id = `pi-${++this.sequence}`;
-      const timeout = type === 'compact' ? 300000 : 30000;
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(t('piCommandTimeout', { type })));
       }, timeout);
       this.pending.set(id, { resolve, reject, timer });
-      try {
-        if (['terminal_input', 'acp_task_save', 'task_notify'].includes(type)) {
-          if (this.closed) throw new Error(t('piClosed'));
-          writeJsonl(this.child.stdio[3], { ...params, type, id });
-        } else this.send({ ...params, type, id });
-      }
+      try { this.send({ ...params, type, id }); }
       catch (error) {
         this.pending.delete(id);
         clearTimeout(timer);
@@ -86,13 +65,14 @@ export class PiProcess {
     });
   }
 
+  // 关闭 stdin 请求 pi 有序退出；超时后强制结束。
   async close() {
     this.closing = true;
     if (this.child.exitCode !== null || this.child.signalCode !== null) return;
     const exited = new Promise(resolve => this.child.once('exit', resolve));
     this.child.stdin.end();
-    const terminate = setTimeout(() => this.child.kill('SIGTERM'), 1000);
-    const kill = setTimeout(() => this.child.kill('SIGKILL'), 3000);
+    const terminate = setTimeout(() => this.child.kill('SIGTERM'), 2000);
+    const kill = setTimeout(() => this.child.kill('SIGKILL'), 5000);
     await exited;
     clearTimeout(terminate);
     clearTimeout(kill);

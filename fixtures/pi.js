@@ -1,237 +1,174 @@
-import { Socket } from 'node:net';
-import { readJsonl, writeJsonl } from '../src/jsonl.js';
-import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
+// 测试用 pi RPC 替身：实现适配器用到的命令和事件，会话按 pi 原生格式写入 PI_CODING_AGENT_SESSION_DIR。
+import { readFileSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
+import { readJsonl, writeJsonl } from '../src/jsonl.js';
+
 const option = name => process.argv.includes(name) ? process.argv[process.argv.lastIndexOf(name) + 1] : undefined;
 const directory = process.env.PI_CODING_AGENT_SESSION_DIR;
-let sessionPath = process.argv.includes('--session') ? option('--session') : join(directory, `${option('--session-id') || randomUUID()}.jsonl`);
-let entries = process.argv.includes('--session') ? readFileSync(sessionPath, 'utf8').trim().split('\n').map(JSON.parse) : [
-  { type: 'session', version: 3, id: process.argv.includes('--session-id') ? option('--session-id') : randomUUID(), cwd: process.cwd(), timestamp: new Date().toISOString() },
+const opened = option('--session');
+const sessionPath = opened ?? join(directory, `${option('--session-id')}.jsonl`);
+const entries = opened ? readFileSync(opened, 'utf8').trim().split('\n').map(line => JSON.parse(line)) : [
+  { type: 'session', version: 3, id: option('--session-id'), timestamp: new Date().toISOString(), cwd: process.cwd() },
 ];
-const persist = () => {
-  if (!process.argv.includes('--no-session')) writeFileSync(sessionPath, entries.map(entry => JSON.stringify(entry)).join('\n') + '\n');
-};
-const append = message => {
-  if (['user', 'assistant'].includes(message.role)) {
-    message = { ...message, acpMessageId: randomUUID() };
-    send({ type: 'extension_ui_request', method: 'notify', message: `PI_ACP_MESSAGE:${JSON.stringify({
-      role: message.role, id: message.acpMessageId,
-    })}` });
-  }
-  entries.push({ type: 'message', id: randomUUID(), parentId: entries.length > 1 ? entries.at(-1).id : null,
-    timestamp: new Date().toISOString(), message });
+const persist = () => writeFileSync(sessionPath, entries.map(entry => JSON.stringify(entry)).join('\n') + '\n');
+const append = entry => {
+  entries.push({ id: randomUUID().slice(0, 8), parentId: entries.length > 1 ? entries.at(-1).id : null,
+    timestamp: new Date().toISOString(), ...entry });
   persist();
 };
 const send = record => writeJsonl(process.stdout, record);
-const control = new Socket({ fd: 3, readable: true, writable: true });
-control.unref();
-readJsonl(control, request => {
-  if (request.type !== 'acp_task_save') return;
-  entries.push({ type: 'custom', id: randomUUID(), parentId: entries.at(-1)?.id ?? null,
-    timestamp: new Date().toISOString(), customType: 'acp_task', data: request.task });
-  persist();
-  writeJsonl(control, { type: 'response', id: request.id, success: true });
-});
-let permission;
-let waiting;
-let active = false;
-let queued = [];
-let timer;
-const finish = () => {
-  if (queued.length) {
-    const prompt = queued.shift();
-    append({ role: 'user', content: prompt.message });
-    send({ type: 'message_start', message: { role: 'assistant' } });
-    send({ type: 'message_update', assistantMessageEvent: {
-      type: 'text_delta', contentIndex: 0, delta: JSON.stringify(prompt),
-    } });
-    timer = setTimeout(finish, 80);
-  } else {
-    active = waiting = false;
-    send({ type: 'agent_settled', aborted: false });
-  }
-};
-const models = [{ provider: 'test', id: 'first', name: '第一个模型' },
-  { provider: 'test', id: 'second', name: '第二个模型' },
-  { provider: 'other', id: 'first', name: '同名模型' }];
+
+const models = process.env.FIXTURE_NO_MODELS ? [] : [
+  { provider: 'test', id: 'first', name: '第一个模型' }, { provider: 'test', id: 'second', name: '第二个模型' }];
 let model = models[0];
 let thinkingLevel = 'medium';
-let forkSequence = 0;
-let compactSequence = 0;
-const thinkingLevels = () => model.provider === 'other' ? ['off']
-  : ['off', 'minimal', 'low', 'medium', 'high', ...(model.id === 'first' ? ['xhigh', 'max'] : [])];
-readJsonl(process.stdin, request => {
-  const response = data => send({ type: 'response', id: request.id, success: true, data });
-  if (request.type === 'get_state') response({ sessionId: entries[0].id, sessionFile: process.argv.includes('--no-session') ? undefined : sessionPath, sessionName: entries.findLast(entry => entry.type === 'session_info')?.name, model, thinkingLevel });
-  else if (request.type === 'get_entries') response({ entries: entries.slice(1), leafId: entries.length > 1 ? entries.at(-1).id : null });
-  else if (request.type === 'get_available_models') response({ models });
-  else if (request.type === 'get_available_thinking_levels') response({ levels: thinkingLevels() });
-  else if (request.type === 'get_commands') response({ commands: [
-    { name: 'fixture', description: '测试命令', source: 'extension' },
-    { name: '__acp_check', description: '内部命令', source: 'extension' },
-  ] });
-  else if (request.type === 'get_session_stats') response({ sessionId: entries[0].id,
-    userMessages: entries.filter(entry => entry.message?.role === 'user').length,
-    assistantMessages: entries.filter(entry => entry.message?.role === 'assistant').length,
-    toolCalls: entries.filter(entry => entry.message?.role === 'assistant').flatMap(entry => entry.message.content ?? []).filter(block => block.type === 'toolCall').length,
-    toolResults: entries.filter(entry => entry.message?.role === 'toolResult').length,
-    totalMessages: entries.filter(entry => entry.type === 'message').length,
-    tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, total: 15 }, cost: 0.001,
-    contextUsage: { tokens: 123 + compactSequence, contextWindow: 1000, percent: 12.3 } });
-  else if (request.type === 'compact') {
-    compactSequence++;
-    send({ type: 'compaction_start', reason: 'manual' });
-    const result = { summary: request.customInstructions || '摘要', firstKeptEntryId: entries.at(-1)?.id,
-      tokensBefore: 500, estimatedTokensAfter: 100 };
-    entries.push({ type: 'compaction', id: randomUUID(), parentId: entries.at(-1)?.id,
-      timestamp: new Date().toISOString(), ...result });
-    persist();
-    send({ type: 'compaction_end', reason: 'manual', result, aborted: false, willRetry: false });
-    response(result);
-  }
-  else if (request.type === 'clone' || (request.type === 'prompt' && request.message.startsWith('/__acp_fork '))) {
-    const oldPath = sessionPath;
-    const header = entries[0];
-    const id = randomUUID();
-    const nextPath = join(directory, `${id}.jsonl`);
-    let branch = entries.slice(1);
-    if (request.type === 'prompt') {
-      const byId = new Map(branch.map(entry => [entry.id, entry]));
-      branch = [];
-      for (let entry = byId.get(JSON.parse(request.message.slice('/__acp_fork '.length))); entry; entry = byId.get(entry.parentId)) branch.push(entry);
-      branch.reverse();
-    }
-    entries = [{ ...header, id, parentSession: oldPath }, ...branch];
-    sessionPath = nextPath;
-    forkSequence++;
-    writeFileSync(nextPath, entries.map(entry => JSON.stringify(entry)).join('\n') + '\n');
-    response({ cancelled: false });
-  }
-  else if (request.type === 'set_session_name') {
-    const name = request.name.trim();
-    entries.push({ type: 'session_info', id: randomUUID(), parentId: entries.at(-1)?.id ?? null,
-      timestamp: new Date().toISOString(), name });
-    persist();
-    send({ type: 'session_info_changed', name });
-    response();
-  }
-  else if (request.type === 'set_thinking_level') {
-    thinkingLevel = request.level;
-    send({ type: 'thinking_level_changed', level: thinkingLevel });
-    response();
-  }
-  else if (request.type === 'set_model') {
-    model = models.find(model => model.provider === request.provider && model.id === request.modelId);
-    if (!thinkingLevels().includes(thinkingLevel)) thinkingLevel = thinkingLevels().at(-1);
-    response(model);
-  }
-  else if (request.type === 'prompt' && request.message === '/__acp_check') {
-    const goal = entries.findLast(entry => entry.type === 'custom' && entry.customType === 'acp_goal')?.data ?? null;
-    send({ type: 'extension_ui_request', method: 'notify', message: `PI_ACP_GOAL:${JSON.stringify(goal)}` });
-    send({ type: 'extension_ui_request', method: 'notify', message: 'PI_ACP_READY' });
-    response({ disposition: 'handled' });
-  } else if (request.type === 'prompt' && request.message.startsWith('/__acp_list')) {
-    const arguments_ = request.message.slice('/__acp_list'.length).trim();
-    const options = arguments_.startsWith('{') ? JSON.parse(arguments_) : {
-      all: arguments_ === 'all', cwds: [process.cwd()],
-    };
-    const all = readdirSync(directory).filter(file => file.endsWith('.jsonl')).map(file => {
-      const path = join(directory, file);
-      const saved = readFileSync(path, 'utf8').trim().split('\n').map(JSON.parse);
-      return { path, saved, header: saved[0] };
-    });
-    const children = new Set(all.flatMap(({ saved, header }) => saved.filter(entry => entry.customType === 'acp_task' &&
-      entry.data?.kind === 'agent' && entry.data.owner === header.id).map(entry => entry.data.sessionId)));
-    // 旧版 @tintinweb/pi-subagents：名称 `类型#8位hex`，且父会话有 id 以该 hex 开头的 subagents:record。
-    for (const { saved, header } of all) {
-      const hex = /#([0-9a-f]{8})$/.exec(saved.findLast(entry => entry.type === 'session_info')?.name ?? '')?.[1];
-      const parent = all.find(candidate => candidate.path === header.parentSession);
-      if (hex && parent?.saved.some(entry => entry.customType === 'subagents:record' && entry.data.id.startsWith(hex))) children.add(header.id);
-    }
-    const sessions = all.map(({ path, saved, header }) => {
-      return { sessionId: header.id, cwd: header.cwd, title: saved.findLast(entry => entry.type === 'session_info')?.name || '测试会话',
-        updatedAt: saved.at(-1).timestamp, path, ...(children.has(header.id) ? { subagent: true } : {}),
-        parentSessionPath: header.parentSession,
-        archived: saved.findLast(entry => entry.type === 'custom' && entry.customType === 'acp_archive')?.data === true };
-    }).filter(session => options.all || options.cwds.some(cwd => resolve(session.cwd) === resolve(cwd)))
-      .map(({ parentSessionPath, ...session }, _, listed) => {
-        const parent = listed.find(candidate => candidate.path === parentSessionPath);
-        return { ...session, ...(parent ? { forkedFrom: parent.sessionId } : {}) };
-      });
-    send({ type: 'extension_ui_request', method: 'notify', message: `PI_ACP_SESSIONS:${JSON.stringify(sessions)}` });
-    response({ disposition: 'handled' });
-  } else if (request.type === 'prompt' && request.message.startsWith('/__acp_archive ')) {
-    entries.push({ type: 'custom', id: randomUUID(), parentId: entries.at(-1)?.id ?? null,
-      timestamp: new Date().toISOString(), customType: 'acp_archive',
-      data: request.message.slice('/__acp_archive '.length) === 'true' });
-    persist();
-    response({ disposition: 'handled' });
-  } else if (request.type === 'prompt' && request.message.startsWith('/__acp_goal ')) {
-    entries.push({ type: 'custom', id: randomUUID(), parentId: entries.at(-1)?.id ?? null,
-      timestamp: new Date().toISOString(), customType: 'acp_goal',
-      data: JSON.parse(request.message.slice('/__acp_goal '.length)) });
-    persist();
-    response({ disposition: 'handled' });
-  } else if (request.type === 'prompt' && request.message === '/__acp_reload') {
-    models.push({ provider: 'test', id: 'reloaded', name: '重载后的模型' });
-    response({ disposition: 'handled' });
-  } else if (request.type === 'prompt' && request.message.startsWith('/__acp_mode ')) {
-    response({ disposition: 'handled' });
-  } else if (request.type === 'prompt' && request.message.startsWith('/name ')) {
-    const name = request.message.slice('/name '.length);
-    entries.push({ type: 'session_info', id: randomUUID(), parentId: entries.at(-1).id,
-      timestamp: new Date().toISOString(), name });
-    persist();
-    send({ type: 'session_info_changed', name: name || undefined });
-    response({ disposition: 'handled' });
-  } else if (request.type === 'prompt' && active && request.streamingBehavior === 'steer') {
-    queued.push({ message: request.message, ...(request.images ? { images: request.images } : {}) });
-    response({ disposition: 'queued' });
-    if (waiting && !permission && request.message !== 'hold') {
-      waiting = false;
-      timer = setTimeout(finish, 20);
-    }
-  } else if (request.type === 'prompt') {
-    if (request.message === 'handled') { response({ disposition: 'handled' }); return; }
-    active = true;
-    response({ disposition: 'started' });
-    send({ type: 'agent_start' });
-    append({ role: 'user', content: request.message });
+const levels = () => model?.id === 'second' ? ['off', 'high'] : ['off', 'low', 'medium', 'high'];
+
+let active = false;
+let queued = [];
+let pendingUi;
+let timer;
+
+const settle = aborted => {
+  active = false;
+  send({ type: 'agent_end', willRetry: false });
+  send({ type: 'agent_settled', aborted });
+};
+const reply = text => {
+  append({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text }], stopReason: 'stop' } });
+  send({ type: 'message_start', message: { role: 'assistant' } });
+  // 只流式发送前半部分，其余由 message_end 补齐。
+  send({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: text.slice(0, 2) } });
+  send({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text }], stopReason: 'stop',
+    usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } });
+};
+const finish = () => {
+  timer = undefined;
+  if (queued.length) {
+    const next = queued.shift();
+    append({ type: 'message', message: { role: 'user', content: next } });
+    reply(`排队：${next}`);
+    timer = setTimeout(finish, 20);
+  } else settle(false);
+};
+
+function run(message) {
+  active = true;
+  send({ type: 'agent_start' });
+  append({ type: 'message', message: { role: 'user', content: message } });
+  if (message === 'crash') process.exit(2);
+  if (message === 'wait') return;
+  if (message === 'error') {
     send({ type: 'message_start', message: { role: 'assistant' } });
-    if (request.message === 'permission') {
-      permission = true;
-      send({ type: 'tool_execution_start', toolCallId: 'call-1', toolName: 'write', args: { path: 'a.txt', content: '你好' } });
-      send({ type: 'extension_ui_request', id: 'ui-1', method: 'confirm', title: 'PI_ACP_PERMISSION',
-        message: JSON.stringify({ toolCallId: 'call-1', toolName: 'write', args: { path: 'a.txt' } }) });
-    } else if (request.message === 'wait') waiting = true;
-    else if (request.message === 'crash') process.exit(2);
-    else {
-      const text = request.message === 'mcp' ? readFileSync(process.env.PI_ACP_CONFIG, 'utf8')
-        : request.message === 'model' ? `${model.provider}/${model.id}`
-          : request.message === 'thinking' ? thinkingLevel : '你好\u2028世界';
-      append({ role: 'assistant', content: [{ type: 'text', text }] });
-      send({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: text } });
-      send({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text }], stopReason: 'stop' } });
-      // 故意先结束低层运行，稍后才报告真正完成。
-      send({ type: 'agent_end', willRetry: true });
-      timer = setTimeout(finish, 80);
-    }
-  } else if (request.type === 'extension_ui_response' && permission) {
-    permission = false;
-    send({ type: 'tool_execution_end', toolCallId: 'call-1', toolName: 'write', isError: !request.confirmed,
-      result: { content: [{ type: 'text', text: request.confirmed ? '已执行' : '已拒绝' }] } });
-    finish();
-  } else if (request.type === 'clear_queue') {
-    response({ steering: queued.map(prompt => prompt.message), followUp: [] });
-    queued = [];
+    send({ type: 'message_end', message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: '提供商出错' } });
+    return settle(false);
   }
-  else if (request.type === 'abort') {
-    clearTimeout(timer);
-    response();
-    if (active) {
-      active = waiting = permission = false;
-      send({ type: 'agent_settled', aborted: true });
+  if (message === 'permission' || message === 'write') {
+    const args = { path: 'a.txt', content: '新内容\n' };
+    append({ type: 'message', message: { role: 'assistant', stopReason: 'toolUse',
+      content: [{ type: 'toolCall', id: 'call-1', name: 'write', arguments: args }] } });
+    send({ type: 'tool_execution_start', toolCallId: 'call-1', toolName: 'write', args });
+    pendingUi = { id: 'ui-1', kind: 'permission' };
+    return send({ type: 'extension_ui_request', id: 'ui-1', method: 'confirm', title: 'PI_ACP_PERMISSION',
+      message: JSON.stringify({ toolCallId: 'call-1', toolName: 'write', args }) });
+  }
+  if (message === 'ask') {
+    pendingUi = { id: 'ui-2', kind: 'ask' };
+    return send({ type: 'extension_ui_request', id: 'ui-2', method: 'select', title: '选一个', options: ['甲', '乙'] });
+  }
+  reply(message === 'mcp' ? readFileSync(process.env.PI_ACP_CONFIG, 'utf8') : message === 'config' ? process.env.PI_ACP_CONFIG
+    : message === 'model' ? `${model.provider}/${model.id}` : '你好\u2028世界');
+  timer = setTimeout(finish, 50);
+}
+
+readJsonl(process.stdin, request => {
+  const respond = (data, error) => send({ type: 'response', id: request.id, command: request.type,
+    success: !error, ...(error ? { error } : { data }) });
+  switch (request.type) {
+    case 'get_state':
+      return respond({ sessionId: entries[0].id, sessionFile: sessionPath, model, thinkingLevel,
+        sessionName: entries.findLast(entry => entry.type === 'session_info')?.name });
+    case 'get_commands':
+      return respond({ commands: [
+        ...(process.env.FIXTURE_NO_EXTENSION ? [] : [{ name: '__acp_mode', source: 'extension' }]),
+        { name: 'fixture', description: '测试命令', source: 'extension' },
+        { name: 'status', description: '与本地命令同名', source: 'extension' }] });
+    case 'get_available_models': return respond({ models });
+    case 'get_available_thinking_levels': return respond({ levels: levels() });
+    case 'set_model':
+      model = models.find(candidate => candidate.provider === request.provider && candidate.id === request.modelId);
+      if (!levels().includes(thinkingLevel)) thinkingLevel = 'off';
+      return respond(model);
+    case 'set_thinking_level':
+      thinkingLevel = request.level;
+      return respond();
+    case 'get_session_stats':
+      return respond({ totalMessages: entries.length - 1, toolCalls: 0, tokens: { total: 15 }, cost: 0.001,
+        contextUsage: { tokens: 123, contextWindow: 1000, percent: 12.3 } });
+    case 'get_entries':
+      return respond({ entries: entries.slice(1), leafId: entries.length > 1 ? entries.at(-1).id : null });
+    case 'set_session_name':
+      append({ type: 'session_info', name: request.name });
+      send({ type: 'session_info_changed', name: request.name });
+      return respond();
+    case 'compact': {
+      send({ type: 'compaction_start', reason: 'manual' });
+      const result = { summary: request.customInstructions || '摘要', tokensBefore: 500, estimatedTokensAfter: 100 };
+      append({ type: 'compaction', ...result });
+      send({ type: 'compaction_end', reason: 'manual', result, aborted: false, willRetry: false });
+      return respond(result);
     }
+    case 'clear_queue':
+      respond({ steering: [], followUp: queued });
+      queued = [];
+      return;
+    case 'abort':
+      clearTimeout(timer);
+      pendingUi = undefined;
+      respond();
+      if (active) settle(true);
+      return;
+    case 'extension_ui_response': {
+      const ui = pendingUi;
+      if (!ui || ui.id !== request.id) return;
+      pendingUi = undefined;
+      if (ui.kind === 'ask') reply(request.cancelled ? '已取消' : `选择了${request.value}`);
+      else {
+        const result = { content: [{ type: 'text', text: request.confirmed ? '已写入' : '已拒绝' }],
+          details: request.confirmed ? { acpDiff: { path: join(process.cwd(), 'a.txt'), oldText: null, newText: '新内容\n' } } : {} };
+        append({ type: 'message', message: { role: 'toolResult', toolCallId: 'call-1', toolName: 'write',
+          isError: !request.confirmed, ...result } });
+        send({ type: 'tool_execution_end', toolCallId: 'call-1', toolName: 'write', isError: !request.confirmed, result });
+      }
+      timer = setTimeout(finish, 20);
+      return;
+    }
+    case 'prompt': {
+      const message = request.message;
+      if (message.startsWith('/__acp_mode ')) return respond({ disposition: 'handled' });
+      if (message === '/__acp_reload') {
+        models.push({ provider: 'test', id: 'reloaded', name: '重载后的模型' });
+        return respond({ disposition: 'handled' });
+      }
+      if (message === '/fixture') {
+        send({ type: 'extension_ui_request', id: randomUUID(), method: 'notify', message: '扩展命令输出', notifyType: 'info' });
+        return respond({ disposition: 'handled' });
+      }
+      if (message === '/auto') {
+        // 模拟扩展命令结束后自行发起一次运行。
+        respond({ disposition: 'handled' });
+        setTimeout(() => run('自动'), 10);
+        return;
+      }
+      if (active) {
+        queued.push(message);
+        return respond({ disposition: 'queued' });
+      }
+      respond({ disposition: 'started' });
+      return run(message);
+    }
+    default:
+      return respond(undefined, `unsupported: ${request.type}`);
   }
 }, () => process.exit(1));
