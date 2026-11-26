@@ -43,7 +43,7 @@ The IDE must be able to find `npx`; use its absolute path if needed. Menu locati
 - File diffs for the built-in `edit` and `write` tools, shown live and when replaying history.
 - stdio and HTTP MCP servers from the client, including IDE tools.
 - Local commands: `/status` shows the model, permission mode, tokens, cost, and context usage; `/compact [instructions]` compacts the context; `/reload` reloads pi models, extensions, skills, and prompts. pi extension commands, prompt templates, and skills appear in the command list.
-- pi extension dialogs (confirm, select, input) become ACP form elicitations when the client supports them; otherwise they are cancelled. Extension notifications become `notice` updates when supported, or reply text during a turn.
+- pi extension dialogs (confirm, select, input) become ACP form elicitations when the client supports them; otherwise they are cancelled. Option numbers added by the extension (such as `1. `) are removed because the client numbers options itself, and plain-text previews in the title are shown in code blocks. Extension notifications become `notice` updates when supported, or reply text during a turn.
 - Terminal sign-in (`auth.terminal`): the client reruns the adapter with `PI_ACP_SETUP=1` to open pi for `/login`. A new session returns an authentication-required error (`-32000`) when pi has no usable model.
 - UI text follows the system language: Chinese for `zh*` locales, English otherwise, based on the first non-empty `LC_ALL`, `LC_MESSAGES`, or `LANG`, falling back to the system locale. Prompts sent to the model are always English. Restart the adapter after changing the language.
 

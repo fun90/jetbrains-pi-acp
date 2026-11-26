@@ -133,6 +133,15 @@ test('扩展对话框按客户端能力转成表单，扩展命令通知显示�
   await running;
   assert.match(messageText(c.updates(sid)), /选择了乙/);
 
+  // 自带序号的选项去掉序号展示，回传原始选项；标题中的预览放进代码块。
+  const numbered = prompt(c, sid, 'ask-numbered');
+  const form = await c.wait(record => record.method === 'elicitation/create' && record.id !== ask.id);
+  assert.deepEqual(form.params.requestedSchema.properties.value.enum, ['甲 — 说明', '乙 — 说明', 'Type something.']);
+  assert.equal(form.params.message, '[单选] 选一个\n\n**1. 甲**\n\n````text\n第一行\n  缩进 ```\n````');
+  c.send({ jsonrpc: '2.0', id: form.id, result: { action: 'accept', content: { value: '乙 — 说明' } } });
+  await numbered;
+  assert.match(messageText(c.updates(sid)), /选择了2\. 乙 — 说明/);
+
   let from = c.records.length;
   assert.equal((await prompt(c, sid, '/fixture')).result.stopReason, 'end_turn');
   assert.match(messageText(c.updates(sid, from)), /扩展命令输出/);

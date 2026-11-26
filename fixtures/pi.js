@@ -77,6 +77,13 @@ function run(message) {
     pendingUi = { id: 'ui-2', kind: 'ask' };
     return send({ type: 'extension_ui_request', id: 'ui-2', method: 'select', title: '选一个', options: ['甲', '乙'] });
   }
+  if (message === 'ask-numbered') {
+    // 与 rpiv-ask-user-question 的 RPC 回退格式一致：选项自带序号，预览以纯文本拼进标题。
+    pendingUi = { id: 'ui-3', kind: 'ask' };
+    return send({ type: 'extension_ui_request', id: 'ui-3', method: 'select',
+      title: '[单选] 选一个\n\n--- 1. 甲 preview ---\n第一行\n  缩进 ```',
+      options: ['1. 甲 — 说明', '2. 乙 — 说明', '3. Type something.'] });
+  }
   reply(message === 'mcp' ? readFileSync(process.env.PI_ACP_CONFIG, 'utf8') : message === 'config' ? process.env.PI_ACP_CONFIG
     : message === 'model' ? `${model.provider}/${model.id}` : '你好\u2028世界');
   timer = setTimeout(finish, 50);

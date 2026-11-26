@@ -7,6 +7,7 @@ import { PiProcess } from './pi.js';
 import { convertPrompt } from './convert.js';
 import { authRequired, invalid } from './errors.js';
 import { READ_ONLY_TOOLS, toolCall, toolResult } from './tools.js';
+import { displayOptions, fencePreviews } from './dialog.js';
 import { t } from './i18n.js';
 
 export const extensionPath = fileURLToPath(new URL('../extensions/acp.ts', import.meta.url));
@@ -430,17 +431,19 @@ export class Session {
       this.respond(event, { cancelled: true });
       return;
     }
+    const shown = event.method === 'select' ? displayOptions(event.options) : undefined;
     const value = event.method === 'confirm' ? { type: 'boolean', default: false }
-      : event.method === 'select' ? { type: 'string', enum: event.options }
+      : event.method === 'select' ? { type: 'string', enum: shown }
         : { type: 'string', ...(event.placeholder ? { title: event.placeholder } : {}),
           ...(typeof event.prefill === 'string' ? { default: event.prefill } : {}) };
     const result = await this.agent.request(this, 'elicitation/create', { sessionId: this.id, mode: 'form',
-      message: [event.title || t('piNeedsInput'), event.message].filter(Boolean).join('\n\n'),
+      message: [fencePreviews(event.title || t('piNeedsInput')), event.message].filter(Boolean).join('\n\n'),
       requestedSchema: { type: 'object', properties: { value }, required: ['value'] } });
-    const answer = result?.action === 'accept' ? result.content?.value : undefined;
+    let answer = result?.action === 'accept' ? result.content?.value : undefined;
+    // 选择题回传扩展提供的原始选项文本。
+    if (shown) answer = event.options[shown.indexOf(answer)];
     if (event.method === 'confirm' && typeof answer === 'boolean') this.respond(event, { confirmed: answer });
-    else if (event.method !== 'confirm' && typeof answer === 'string' &&
-             (event.method !== 'select' || event.options.includes(answer))) this.respond(event, { value: answer });
+    else if (event.method !== 'confirm' && typeof answer === 'string') this.respond(event, { value: answer });
     else this.respond(event, { cancelled: true });
   }
 
