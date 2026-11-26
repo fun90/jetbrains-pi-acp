@@ -26,6 +26,19 @@ const notifyHandlers = {
   },
 };
 
+// rpiv-ask-user-question 在 RPC 下把选项预览以纯文本拼进标题，而 Air 按 Markdown 渲染表单消息，
+// 换行和对齐空格会丢失，故将各段预览放进代码块；围栏要长于预览内的反引号串。
+function fencePreviews(title) {
+  const [head, ...parts] = title.split(/\n\n--- (\d+\. .*) preview ---\n/);
+  let text = head;
+  for (let i = 0; i < parts.length; i += 2) {
+    const preview = parts[i + 1];
+    const fence = '`'.repeat(Math.max(3, ...(preview.match(/`+/g) ?? []).map(run => run.length + 1)));
+    text += `\n\n**${parts[i]}**\n\n${fence}text\n${preview}\n${fence}`;
+  }
+  return text;
+}
+
 // 处理 pi 扩展的 UI 请求，并转成发给 ACP 客户端的授权、表单或 URL 交互请求。
 // pending 保存等待客户端回复的请求：id → { session, resolve, kind: 'permission' | 'elicitation' }。
 export class Interactions {
@@ -134,9 +147,10 @@ export class Interactions {
         ? { type: 'string', enum: shown }
         : { type: 'string', ...(event.placeholder ? { description: event.placeholder } : {}),
           ...(event.prefill !== undefined ? { default: event.prefill } : {}) };
+    const title = numbered && event.title ? fencePreviews(event.title) : event.title;
     const result = await this.request(session, 'elicitation', 'elicitation/create', {
       sessionId: session.interactionSessionId ?? session.id, mode: 'form',
-      message: [event.title || t('piNeedsInput'), event.message].filter(Boolean).join('\n\n'),
+      message: [title || t('piNeedsInput'), event.message].filter(Boolean).join('\n\n'),
       requestedSchema: { type: 'object', properties: { value: property }, required: ['value'] },
     });
     const raw = result?.content?.value;
