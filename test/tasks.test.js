@@ -358,6 +358,26 @@ test('pi 自行发起的回合（无 session/prompt）也建立回合、转发�
   assert.deepEqual(states, ['running', 'idle']);
 });
 
+test('pi 自行发起的回合进行中，客户端普通提示排队而非报错，且只接管一次', async () => {
+  const { agent, parent } = await setup();
+  const prompts = [];
+  parent.blocks = new Map();
+  parent.pi.request = async (type, params) => {
+    if (type === 'prompt') prompts.push(params);
+    return { disposition: 'queued' };
+  };
+  agent.refreshUsage = async () => {};
+  agent.event(parent, { type: 'agent_start' });
+  const send = text => agent.dispatch('session/prompt', { sessionId: parent.id, prompt: [{ type: 'text', text }] });
+  await assert.rejects(send('/compact'), { message: msg('promptRunning') });
+  const queued = send('继续');
+  await assert.rejects(send('再发一条'), { message: msg('promptRunning') });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.deepEqual(prompts.map(prompt => [prompt.message, prompt.streamingBehavior]), [['继续', 'followUp']]);
+  agent.event(parent, { type: 'agent_settled' });
+  assert.equal((await queued).stopReason, 'end_turn');
+});
+
 test('后台任务名压成单行短名，避免 IDE 停止按钮被挤出', () => {
   assert.equal(taskLabel('  npm   run\n dev '), 'npm run dev');
   const long = taskLabel('x'.repeat(200));
@@ -575,4 +595,101 @@ test('子会话可只读查询祖先拥有的任务，但不能停止，也不�
     await assert.rejects(agent.tasks.stopDetailed(childSession, sibling.taskId), /does not exist|不存在/);
     await assert.rejects(agent.tasks.status(stranger, { taskId: sibling.taskId }), /does not exist|不存在/);
   } finally { await agent.tasks.stop(parent, sibling.taskId); }
+});
+
+async function notifySetup() {
+  const context = await setup(air);
+  const notices = [];
+  const save = context.parent.pi.request;
+  context.parent.pi.request = async (type, params) => {
+    if (type === 'task_notify') notices.push(params);
+    return save(type, params);
+  };
+  const run = async (command, toolCallId, session = context.parent) => {
+    const result = await context.agent.tasks.start(session, 'shell', { shell, command }, toolCallId);
+    await context.agent.tasks.tasks.get(result.taskId).completion;
+    return result;
+  };
+  // 直接触发投递，不依赖去抖定时器的时间。
+  const flush = async (session = context.parent) => {
+    clearTimeout(session.noticeTimer);
+    session.noticeTimer = undefined;
+    await context.agent.tasks.deliverNotices(session);
+  };
+  return { ...context, notices, run, flush };
+}
+
+test('后台命令结束后合并发送一条完成通知，只带去除控制字符的末尾输出', async () => {
+  const { parent, notices, run, flush } = await notifySetup();
+  const first = await run('printf "\\033[31m%03000d完成\\033[0m" 0', 'shell-ok');
+  assert.equal(first.notifyOnExit, true);
+  await run('exit 7', 'shell-failed');
+  await flush();
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].wake, true);
+  const [ok, failed] = notices[0].notices;
+  assert.deepEqual([ok.toolCallId, failed.toolCallId], ['shell-ok', 'shell-failed']);
+  assert.match(ok.text, new RegExp(`${first.taskId} completed exit=0`));
+  assert.match(ok.text, /\(tail only\)[\s\S]*0完成$/);
+  assert.ok(!ok.text.includes('\u001b') && ok.text.length < 1300);
+  assert.match(failed.text, /failed exit=7/);
+  await flush();
+  assert.equal(notices.length, 1);
+});
+
+test('去抖定时器自行投递完成通知，会话关闭时丢弃未投递的通知', async () => {
+  const { agent, parent, notices, run } = await notifySetup();
+  await run('true', 'timer');
+  await new Promise(resolve => setTimeout(resolve, 700));
+  assert.equal(notices.length, 1);
+  await run('true', 'closed');
+  await agent.tasks.close(parent);
+  assert.equal(parent.noticeTimer, undefined);
+  await new Promise(resolve => setTimeout(resolve, 700));
+  assert.equal(notices.length, 1);
+});
+
+test('会话忙碌时延后通知，期间已读到终态的任务不再通知', async () => {
+  const { agent, parent, notices, run, flush } = await notifySetup();
+  parent.turn = { cancelled: false };
+  const queried = await run('true', 'queried');
+  const waited = await run('true', 'waited');
+  const stopped = await run('true', 'stopped-late');
+  await run('true', 'unread');
+  await flush();
+  assert.equal(notices.length, 0);
+  assert.ok(parent.noticeTimer);
+  await agent.tasks.status(parent, { taskId: queried.taskId });
+  await agent.tasks.status(parent, { taskId: waited.taskId, waitSeconds: 1 });
+  await agent.tasks.stopDetailed(parent, stopped.taskId);
+  parent.turn = null;
+  await flush();
+  assert.deepEqual(notices[0].notices.map(notice => notice.toolCallId), ['unread']);
+});
+
+test('启动回合被取消或处于计划模式时通知不唤醒模型', async () => {
+  const { parent, notices, run, flush } = await notifySetup();
+  const turn = { cancelled: false };
+  parent.turn = turn;
+  await run('true', 'cancelled');
+  turn.cancelled = true;
+  parent.turn = null;
+  await flush();
+  assert.equal(notices[0].wake, false);
+  await run('true', 'planned');
+  parent.mode = 'plan';
+  await flush();
+  assert.equal(notices[1].wake, false);
+});
+
+test('被停止的命令与子 agent 会话内的命令不发送完成通知', async () => {
+  const { agent, parent, notices, run, flush } = await notifySetup();
+  const task = await agent.tasks.start(parent, 'shell', { shell, command: 'sleep 60' });
+  await agent.tasks.stop(parent, task.taskId);
+  const child = { ...parent, id: 'child', parentId: parent.id, notices: undefined, noticeTimer: undefined };
+  agent.sessions.set(child.id, child);
+  assert.equal((await run('true', 'in-child', child)).notifyOnExit, undefined);
+  await flush();
+  await flush(child);
+  assert.equal(notices.length, 0);
 });

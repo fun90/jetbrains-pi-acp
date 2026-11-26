@@ -72,7 +72,7 @@ export class PiProcess {
       }, timeout);
       this.pending.set(id, { resolve, reject, timer });
       try {
-        if (type === 'terminal_input' || type === 'acp_task_save') {
+        if (['terminal_input', 'acp_task_save', 'task_notify'].includes(type)) {
           if (this.closed) throw new Error(t('piClosed'));
           writeJsonl(this.child.stdio[3], { ...params, type, id });
         } else this.send({ ...params, type, id });

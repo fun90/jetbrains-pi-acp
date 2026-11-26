@@ -240,7 +240,8 @@ export class Agent {
       return steering ? { outcome: 'injected' } : { stopReason: 'end_turn' };
     }
     // Air v1 的运行中发送入口也会发普通 prompt；作为 followUp 排队，响应仍等待回合结束。
-    if (session.turn && !steering && !(this.airClient && this.protocolVersion !== 2)) {
+    // pi 自行发起的回合（后台任务完成唤醒等）客户端并不知道会话在忙，同样排队。
+    if (session.turn && !session.turn.auto && !steering && !(this.airClient && this.protocolVersion !== 2)) {
       throw invalid(t('promptRunning'));
     }
     if (session.turn?.cancelled) throw invalid(t('sessionCancelling'));
@@ -251,6 +252,11 @@ export class Agent {
     const command = prompt.message.split(/\n\ncontext: renderer=/)[0].trim();
     if (!session.turn && !steering && !prompt.images && this.commands.isLocal(command)) {
       return this.commands.run(session, command, this.fileReportRequest(params));
+    }
+    if (session.turn?.auto && !steering) {
+      // 本地命令不能排进进行中的回合；接管后的回合按客户端提示处理。
+      if (this.commands.isLocal(command)) throw invalid(t('promptRunning'));
+      session.turn.auto = false;
     }
     return this.prompt(session, prompt, steering, steering ? undefined : this.fileReportRequest(params));
   }
@@ -866,6 +872,7 @@ export class Agent {
     if (!session.turn && event.type === 'agent_start' && !session.parentId) {
       // 没有等待中的 session/prompt：回合由 pi 内部扩展发起，补建回合以转发输出并报告空闲。
       const turn = this.beginTurn(session, true);
+      turn.auto = true;
       turn.completed.then(() => this.onForegroundState?.(session, 'idle',
         { stopReason: turn.cancelled ? 'cancelled' : turn.error ? 'error' : turn.stopReason }));
     }

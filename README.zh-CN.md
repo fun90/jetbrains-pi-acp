@@ -45,6 +45,7 @@ IDE 必须能找到 `npx`，必要时使用其绝对路径。菜单位置随 IDE
 - 展示内置 `edit/write` 工具的文件 diff，可协商 Air Git patch 和每轮文件报告。文件报告快照遵守 `.gitignore` 等 Git 忽略规则，保留已跟踪文件；非 Git 项目或 Git 不可用时使用文件系统扫描，跳过 `node_modules/`、`vendor/`、`target/`、`build/`、`dist/`、`coverage/`、`.cache/`、`.venv/` 等常见依赖、构建和缓存目录（包括嵌套目录）。快照始终跳过 `.DS_Store`。
 - 转发 stdio/HTTP MCP 配置及 IDE 工具；支持子 agent、后台 shell 任务和定向停止。
 - 任务工具返回稳定句柄（`provider`、`taskId`、`sessionId`、所有者会话）和 `nextTools`。`task_status` 接受 taskId 或子 agent sessionId，不带参数时列出任务，并支持 `waitSeconds`（上限 60，可重复调用）以代替 shell sleep；子 agent 可只读查询祖先会话的任务，但不能停止。`stop_task` 返回实际终态、输出，以及是否仅停止了遗留后代任务，不会回滚文件。未知任务 ID 和操作会列出可用选项。适配器无法控制 pi 原生 `agent_*` 工具、`pi-agents` 的 ID，也不负责 browser/MCP 工具路由。
+- 主会话的 `background_shell` 命令自行结束（成功或失败）后会自动通知模型并发起新回合，无需轮询；结果中的 `notifyOnExit` 标明这一行为。会话忙碌时等当前回合结束再投递，同时结束的任务合并为一条，只带末尾输出。已通过 `task_status`/`stop_task` 读到终态、被停止、切到不含启动记录的分支、或适配器重启后恢复的任务不通知；启动回合被取消或处于只读/规划模式时只写入上下文。子 agent 会话内的命令仍用 `task_status` 等待。唤醒回合进行中发送的普通消息会排队到该回合（本地命令仍拒绝）。
 - 安装 `pi-agents` 后，其子 agent 在支持 `asyncTasks` 的 Air 任务列表中只读展示运行和等待依赖状态，完成、失败或停止后退出活动列表；当前扩展的状态快照不提供工具详情或完成百分比。
 - `/goal <目标>` 和 `/goal resume` 会自动持续执行，直到模型验证完成并调用 `goal_complete` 清除目标；连续 20 轮仍未完成会暂停，可用 `/goal resume` 继续。停止按钮取消当前执行，`/goal pause` 或 Air 目标面板的暂停操作阻止后续轮次。完成由执行模型判断，不包含独立审计。Air 面板设置或恢复目标仅同步状态，启动执行请发送 `/goal resume`。
 - 按客户端能力提供 steering、终端 stdin、表单和 URL 交互。Air v1 可在命令执行期间发送 `/stdin 文本` 和 `/eof`。Air v1 在回合运行期间发送的普通消息会作为后续提示排队，其提示请求等待回合结束后返回。

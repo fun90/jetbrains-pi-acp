@@ -46,6 +46,7 @@ const zh = {
   refreshSessionListFailed: '刷新会话列表失败：{error}',
   closeTasksFailed: '关闭后台任务失败：{error}',
   saveTaskFailed: '保存任务失败：{error}',
+  taskNotifyFailed: '后台任务完成通知失败：{error}',
   taskStoreFailed: '后台任务存储失败：{error}',
   extensionUiFailed: '扩展交互失败：{error}',
 
@@ -218,7 +219,7 @@ const zh = {
   updatePlanLabel: '更新计划',
   taskNotFound: '任务不存在或不属于当前会话。本会话已知任务：{known}',
   taskNone: '无',
-  taskListHint: '传入 taskId 查看输出，可加 waitSeconds（最大 {max}）等待完成，或调用 stop_task。',
+  taskListHint: '传入 taskId 查看输出，或调用 stop_task；没有完成通知的任务可加 waitSeconds（最大 {max}）等待完成。',
   taskListEmpty: '本会话没有任务。可用 spawn_agent 或 background_shell 启动。',
   stopEndedByItself: '任务在停止生效前已自行结束（状态：{state}）。',
   stopAlreadyFinished: '任务此前已结束（状态：{state}），未停止任何东西。',
@@ -287,6 +288,7 @@ const en = {
   refreshSessionListFailed: 'Failed to refresh session list: {error}',
   closeTasksFailed: 'Failed to close background tasks: {error}',
   saveTaskFailed: 'Failed to save task: {error}',
+  taskNotifyFailed: 'Failed to send background task notification: {error}',
   taskStoreFailed: 'Background task storage failed: {error}',
   extensionUiFailed: 'Extension interaction failed: {error}',
 
@@ -448,7 +450,7 @@ const en = {
   updatePlanLabel: 'Update Plan',
   taskNotFound: 'Task does not exist or does not belong to this session. Known tasks in this session: {known}',
   taskNone: 'none',
-  taskListHint: 'Pass taskId for output, add waitSeconds (max {max}) to wait for completion, or call stop_task.',
+  taskListHint: 'Pass taskId for output or call stop_task; add waitSeconds (max {max}) to wait for tasks without a completion notice.',
   taskListEmpty: 'No tasks in this session. Start one with spawn_agent or background_shell.',
   stopEndedByItself: 'Task ended on its own before the stop took effect (state: {state}).',
   stopAlreadyFinished: 'Task was already finished (state: {state}); nothing was stopped.',

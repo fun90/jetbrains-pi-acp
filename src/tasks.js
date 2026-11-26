@@ -3,12 +3,17 @@ import { spawn } from 'node:child_process';
 import { mkdir, readFile, writeFile, lstat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stripVTControlCharacters } from 'node:util';
 import { invalid, logError, restrictedModes } from './shared.js';
 import { t } from './i18n.js';
 
 const running = task => task.state === 'running';
 const MAX_OUTPUT = 256 * 1024;
 const MAX_WAIT_SECONDS = 60;
+// 完成通知：短暂合并同时结束的任务；输出只带末尾，总量固定，避免通知本身消耗大量上下文。
+const NOTICE_DELAY = 500;
+const NOTICE_OUTPUT = 4000;
+const NOTICE_TASK_OUTPUT = 1000;
 const PROVIDER = 'jetbrains-pi-acp';
 export const taskActions = ['spawn_agent', 'background_shell', 'task_status', 'stop_task'];
 // pi-agents 的 AgentState 到异步任务状态的映射；未知状态按运行中处理。
@@ -20,6 +25,16 @@ const piAgentDescription = { working: 'agentWorking', waiting: 'agentWaiting', i
 export const taskLabel = text => {
   const line = text.replace(/\s+/g, ' ').trim();
   return line.length > 60 ? `${line.slice(0, 59)}…` : line;
+};
+
+const noticeText = (task, limit) => {
+  const plain = stripVTControlCharacters(task.output).replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
+  const tail = plain.slice(-limit).toWellFormed().trim();
+  const exit = Number.isInteger(task.exitCode) ? ` exit=${task.exitCode}` : '';
+  return [`- taskId ${task.id} ${task.state}${exit}: ${taskLabel(task.name)}`,
+    ...(task.error ? [`  error: ${task.error.slice(0, 200)}`] : []),
+    ...(tail ? [`  output${task.truncated || plain.length > limit ? ' (tail only)' : ''}:\n${tail}`] : []),
+  ].join('\n');
 };
 
 export class Tasks {
@@ -153,7 +168,7 @@ export class Tasks {
       return { tasks, hint: t(tasks.length ? 'taskListHint' : 'taskListEmpty', { max: MAX_WAIT_SECONDS }) };
     }
     const task = this.readable(session, taskId);
-    if (!waitSeconds) return this.view(session, task);
+    if (!waitSeconds) return this.report(session, task);
     const started = Date.now();
     const deadline = started + Math.min(waitSeconds, MAX_WAIT_SECONDS) * 1000;
     let reason = 'finished';
@@ -162,8 +177,14 @@ export class Tasks {
       if (Date.now() >= deadline) { reason = 'timeout'; break; }
       await new Promise(resolve => setTimeout(resolve, 100));
     }
-    return { ...this.view(session, task), wait: { waitedMs: Date.now() - started, timedOut: reason === 'timeout',
+    return { ...this.report(session, task), wait: { waitedMs: Date.now() - started, timedOut: reason === 'timeout',
       maxSeconds: MAX_WAIT_SECONDS, reason } };
+  }
+
+  // 返回给模型的查询结果；所有者读到终态后不再发送完成通知。
+  report(session, task) {
+    if (!running(task) && task.owner === session.id) task.reported = true;
+    return this.view(session, task);
   }
 
   // stop_task：报告实际终态与交接信息；没有真正停止任何东西时明确说明。
@@ -173,6 +194,7 @@ export class Tasks {
     const task = this.owned(session, id);
     const before = task.state;
     const { stopped } = await this.stop(session, task.id);
+    task.reported = true;
     const snapshot = this.snapshot(task);
     if (!stopped) return { stopped: false, reason: t(before === 'running' ? 'stopEndedByItself' : 'stopAlreadyFinished',
       { state: task.state }), ...snapshot };
@@ -196,7 +218,46 @@ export class Tasks {
     const parent = this.agent.sessions.get(task.owner);
     if (!parent) return;
     this.publishState(parent, task);
+    this.queueNotice(parent, task);
     return this.save(parent, task);
+  }
+
+  // 只通知自行结束的后台命令；被停止、随会话关闭而终止、以及由历史恢复的任务（无 notify 标记）不通知。
+  queueNotice(session, task) {
+    if (!task.notify || task.failure || task.controller.signal.aborted ||
+        !['completed', 'failed'].includes(task.state)) return;
+    (session.notices ??= new Set()).add(task);
+    this.scheduleNotices(session);
+  }
+
+  scheduleNotices(session) {
+    session.noticeTimer ??= setTimeout(() => {
+      session.noticeTimer = undefined;
+      this.deliverNotices(session).catch(logError('taskNotifyFailed'));
+    }, NOTICE_DELAY);
+  }
+
+  clearNotices(session) {
+    clearTimeout(session.noticeTimer);
+    session.noticeTimer = undefined;
+    session.notices?.clear();
+  }
+
+  // 会话忙碌时延后投递：不打断当前回合，期间模型自己查到结果的任务也就无需再通知。
+  async deliverNotices(session) {
+    if (this.agent.closing || session.failure || this.agent.sessions.get(session.id) !== session) {
+      return this.clearNotices(session);
+    }
+    if (session.turn || session.command || session.changingConfig) return this.scheduleNotices(session);
+    const tasks = [...session.notices ?? []].filter(task => !task.reported);
+    session.notices?.clear();
+    if (!tasks.length) return;
+    const limit = Math.min(NOTICE_TASK_OUTPUT, Math.floor(NOTICE_OUTPUT / tasks.length));
+    // 启动任务的回合被用户取消，或会话处于只读/计划模式时，只写入上下文，不发起新回合。
+    await session.pi.request('task_notify', {
+      wake: !restrictedModes.includes(session.mode) && tasks.some(task => !task.turn?.cancelled),
+      notices: tasks.map(task => ({ toolCallId: task.toolCallId, text: noticeText(task, limit) })),
+    });
   }
 
   publishState(parent, task) {
@@ -446,6 +507,8 @@ export class Tasks {
       output: '', truncated: false, controller: new AbortController(), startedAt: Date.now() };
     task.lastActivityAt = task.startedAt;
     if (kind === 'agent') task.childId = randomUUID();
+    // 子 agent 会话的回合由父任务管理，结束后无法再唤醒，仍用 task_status 等待。
+    else if (!session.parentId) Object.assign(task, { notify: true, turn: session.turn });
     let started;
     task.started = new Promise(resolve => { started = resolve; });
     this.tasks.set(task.id, task);
@@ -495,7 +558,7 @@ export class Tasks {
         await this.startShell(session, task, params);
       }
       task.completion?.catch(error => logError('saveTaskFailed')(error));
-      return this.snapshot(task);
+      return { ...this.snapshot(task), ...(task.notify ? { notifyOnExit: true } : {}) };
     } catch (error) {
       if (running(task)) await this.finish(task, task.controller.signal.aborted ? 'stopped' : 'failed', error);
       throw error;
@@ -528,6 +591,7 @@ export class Tasks {
   }
 
   async close(session, error) {
+    this.clearNotices(session);
     await Promise.all(this.ownedBy(session.id).map(async task => {
       try {
         if (running(task) && error) {

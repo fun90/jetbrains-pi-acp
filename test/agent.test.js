@@ -2043,6 +2043,52 @@ for (const version of [1, 2]) {
 }
 
 for (const version of [1, 2]) {
+  test(`本机 pi ACP v${version} 后台命令结束后自动唤醒模型（本地模型替身）`,
+    { skip: !process.env.PI_ACP_SMOKE }, async t => {
+      const directory = await realpath(await mkdtemp(join(tmpdir(), 'pi-acp-notify-')));
+      t.after(() => rm(directory, { recursive: true, force: true }));
+      const extension = join(directory, 'notify-model.ts');
+      await writeFile(extension, `import { createAssistantMessageEventStream } from '@earendil-works/pi-ai';
+      export default function (pi: any) {
+        pi.registerProvider('notify-test', {
+          api: 'notify-test-api', apiKey: 'test', baseUrl: 'http://localhost',
+          models: [{ id: 'mock', name: '通知测试模型', reasoning: false, input: ['text'],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 }],
+          streamSimple: (model: any, context: any) => {
+            const stream = createAssistantMessageEventStream();
+            const text = JSON.stringify(context.messages);
+            const notified = text.includes('Background command(s) finished') && text.includes('构建输出');
+            const called = context.messages.some((message: any) => message.role === 'toolResult');
+            const content = !called ? [{ type: 'toolCall', id: 'notify-shell', name: 'background_shell',
+              arguments: { command: 'sleep 1; printf 构建输出' } }]
+              : [{ type: 'text', text: notified ? '已收到完成通知' : '先处理别的事' }];
+            const reason = called ? 'stop' : 'toolUse';
+            const message = { role: 'assistant', content, api: model.api, provider: model.provider,
+              model: model.id, stopReason: reason, timestamp: Date.now(),
+              usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+            stream.push({ type: 'done', reason, message }); stream.end(); return stream;
+          },
+        });
+      }`);
+      const c = await client(t, true, undefined, ['--extension', extension, '--model', 'notify-test/mock']);
+      const capabilities = { _meta: { jetbrains: { air: { version: 1, capabilities: ['asyncTasks'] } } } };
+      await c.request('initialize', { protocolVersion: version,
+        ...(version === 1 ? { clientCapabilities: capabilities }
+          : { info: { name: 'notify-test', version: '1' }, capabilities }) });
+      const sid = (await c.request('session/new', { cwd: directory, mcpServers: [] })).result.sessionId;
+      const response = await c.request('session/prompt', { sessionId: sid, prompt: [{ type: 'text', text: '后台构建' }] });
+      assert.ok(!response.error, JSON.stringify(response));
+      await c.wait(record => record.params?.update?.content?.text === '先处理别的事');
+      await c.wait(record => record.params?.update?.content?.text === '已收到完成通知');
+      // 唤醒回合结束后会话仍可继续对话，历史重放不因通知消息失败。
+      assert.equal((await c.request('session/prompt', { sessionId: sid,
+        prompt: [{ type: 'text', text: '继续' }] })).error, undefined);
+      assert.deepEqual((await c.request('session/close', { sessionId: sid })).result, {});
+    });
+}
+
+for (const version of [1, 2]) {
   test(`本机 pi ACP v${version} 转发 pi-agents 状态描述`, { skip: !process.env.PI_ACP_SMOKE }, async t => {
     const directory = await mkdtemp(join(tmpdir(), 'pi-acp-agent-state-'));
     t.after(() => rm(directory, { recursive: true, force: true }));
