@@ -44,18 +44,24 @@ export async function client(t, { piCommand = fixture, args = [], env = {}, sess
   const updates = (sessionId, from = 0) => records.slice(from)
     .filter(record => record.method === 'session/update' && record.params.sessionId === sessionId)
     .map(record => record.params.update);
-  t.after(async () => {
+  // 关闭输入后适配器会结束 pi 子进程并退出；可重复调用。
+  const close = async () => {
     for (const waiter of waiters) clearTimeout(waiter.timer);
-    if (child.exitCode === null && child.signalCode === null) {
-      const exited = once(child, 'exit');
-      child.stdin.end();
-      await exited;
-    }
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    const exited = once(child, 'exit');
+    child.stdin.end();
+    await exited;
+  };
+  t.after(async () => {
+    await close();
     assert.equal(child.exitCode, 0, stderr);
-    if (!sessionDir) await rm(directory, { recursive: true, force: true });
+    if (!sessionDir) await removeDirectory(directory);
   });
-  return { child, records, send, request, wait, updates, directory, stderr: () => stderr };
+  return { child, records, send, request, wait, updates, close, directory, stderr: () => stderr };
 }
+
+// Windows 不允许删除仍被进程使用的目录，进程退出后句柄也可能稍晚释放，需重试。
+export const removeDirectory = directory => rm(directory, { recursive: true, force: true, maxRetries: 10 });
 
 export async function initialize(c, clientCapabilities = {}) {
   const response = await c.request('initialize', { protocolVersion: 1, clientCapabilities });

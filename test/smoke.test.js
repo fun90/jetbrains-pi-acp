@@ -1,14 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { client, initialize, messageText, newSession, prompt } from './helpers.js';
+import { client, initialize, messageText, newSession, prompt, removeDirectory } from './helpers.js';
 
 // 使用依赖自带的真实 pi，模型由本地扩展替身提供，不访问网络；PI_CODING_AGENT_DIR 隔离用户配置。
 test('本机 pi：授权、文件 diff、本地命令及历史回放（本地模型替身）', { skip: !process.env.PI_ACP_SMOKE, timeout: 120000 }, async t => {
   const directory = await realpath(await mkdtemp(join(tmpdir(), 'pi-acp-smoke-')));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  // t.after 按注册顺序执行，先于各 client 的清理；必须先关闭以 project 为工作目录的进程再删除。
+  const clients = [];
+  t.after(async () => {
+    await Promise.all(clients.map(c => c.close()));
+    await removeDirectory(directory);
+  });
   const project = join(directory, 'project');
   const target = join(project, 'note.txt');
   await mkdir(project);
@@ -49,6 +54,7 @@ test('本机 pi：授权、文件 diff、本地命令及历史回放（本地模
     args: ['--offline', '--no-extensions', '--no-skills', '--no-context-files', '--no-mcp',
       '--extension', extension, '--model', 'smoke/mock'] };
   const c = await client(t, options);
+  clients.push(c);
   await initialize(c);
   const created = await newSession(c, { cwd: project });
   const sid = created.sessionId;
@@ -91,6 +97,7 @@ test('本机 pi：授权、文件 diff、本地命令及历史回放（本地模
 
   // 新进程加载历史，回放消息、工具调用和 diff。
   const d = await client(t, options);
+  clients.push(d);
   await initialize(d);
   const loaded = await d.request('session/load', { sessionId: sid, cwd: project, mcpServers: [] });
   assert.ok(loaded.result.configOptions);
