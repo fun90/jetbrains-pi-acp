@@ -179,6 +179,19 @@ test('后台任务以计划显示在输入框上方：启动时运行中，回�
   assert.equal(plans().length, 4);
 });
 
+test('回合进行中结束的后台任务经 entry_appended 送达，回复结束时以完成状态发布', async t => {
+  const c = await client(t);
+  await initialize(c);
+  const { sessionId: sid } = await newSession(c);
+  const plans = () => c.updates(sid).filter(update => update.sessionUpdate === 'plan');
+  assert.equal((await prompt(c, sid, 'background-boundary')).result.stopReason, 'end_turn');
+  assert.deepEqual(plans().map(plan => plan.entries[0].status), ['in_progress', 'completed']);
+  assert.equal(plans()[1].entries[0].content, msg('backgroundEntry', { label: '测试',
+    status: msg('backgroundElapsed', { status: msg('backgroundSucceeded'), seconds: 3 }) }));
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal(plans().length, 2, '全部完成后不应再重新发布运行中计划');
+});
+
 test('不支持表单的客户端取消扩展对话框；模型错误返回 JSON-RPC 错误；pi 退出后会话报错', async t => {
   const c = await client(t);
   await initialize(c);

@@ -95,6 +95,18 @@ function run(message) {
     }, 400);
     return;
   }
+  if (message === 'background-boundary') {
+    // 模拟回合进行中任务结束：扩展在回合边界写入完成通知，pi 只发 entry_appended，不发 message_end。
+    const task = { id: 'bg-2', status: 'running', description: '测试', elapsed_seconds: 0 };
+    send({ type: 'tool_execution_start', toolCallId: 'call-bg2', toolName: 'background_task', args: { action: 'start' } });
+    send({ type: 'tool_execution_end', toolCallId: 'call-bg2', toolName: 'background_task', isError: false,
+      result: { content: [{ type: 'text', text: 'Started bg-2' }], details: { action: 'start', task } } });
+    const finished = { ...task, status: 'succeeded', elapsed_seconds: 3.4, exit_code: 0 };
+    send({ type: 'entry_appended', entry: { type: 'custom_message', id: 'e-1', customType: 'background-task-finished',
+      content: '', display: true, details: { tasks: [finished], task: finished } } });
+    reply('已处理');
+    return settle(false);
+  }
   if (message === 'ask') {
     pendingUi = { id: 'ui-2', kind: 'ask' };
     return send({ type: 'extension_ui_request', id: 'ui-2', method: 'select', title: '选一个', options: ['甲', '乙'] });

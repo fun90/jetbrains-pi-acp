@@ -337,6 +337,12 @@ export class Session {
         else if (message.stopReason === 'aborted') turn.cancelled = true;
         break;
       }
+      case 'entry_appended': {
+        // 回合进行中，完成通知由扩展在 turn_end/agent_before_settle 边界直接写入会话，pi 只发 entry_appended。
+        const entry = event.entry;
+        if (entry?.type === 'custom_message' && entry.customType === 'background-task-finished') this.trackBackground(entry.details);
+        break;
+      }
       case 'auto_retry_end':
         if (turn && !event.success) turn.error = new Error(event.finalError || t('retryFailed'));
         break;
