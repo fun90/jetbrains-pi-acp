@@ -222,7 +222,11 @@ npm run --silent config -- /目标机器上的绝对路径/pi
 }
 ```
 
-如果 Pi 可执行文件的 shebang 是 `#!/usr/bin/env node`，仅设置 ACP 的 Node.js 绝对路径仍不足以保证子进程找到 Node.js。GUI 启动的 IDEA 可能没有终端 PATH：必要时为该 Agent 增加 `env.PATH`，使用目标机器实际 Node.js 所在目录、npm bin 与原 PATH 组成的完整字符串；JSON 中不会自动展开 `$HOME` 或 `$PATH`。修改后重新创建聊天会话验证。
+如果 Pi 可执行文件的 shebang 是 `#!/usr/bin/env node`，仅设置 ACP 的 Node.js 绝对路径仍不足以保证子进程找到 Node.js。GUI 启动的 IDEA 可能没有终端 PATH。
+
+> **注意：`env.PATH` 会整个替换 Agent 继承的 PATH。** 漏掉的目录会导致 Pi 的命令行找不到已安装的工具（如 `python`）。
+
+默认省略 `env.PATH`，仅在 Agent 找不到 Node.js 等必需命令时添加。取值为原完整 PATH 加上缺少的目录（Node.js 所在目录、npm bin 等）；原 PATH 可查 `idea.log` 中 `[acp.<agent>] Target PATH` 一行。JSON 中不会展开 `$HOME` 或 `$PATH`，须写实际路径。修改后新建聊天会话，让 Pi 运行 `node --version` 及用户常用命令验证。
 
 本适配器会统一传入 Pi 的 RPC 与会话参数。需要固定模型时，在 `args` 末尾追加 `"--", "--model", "magpie/实际模型ID", "--thinking", "medium"`，不要自行追加 `--mode rpc`、初始提示或历史会话参数。
 
