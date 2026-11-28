@@ -96,6 +96,17 @@ node .github/release-notes.js "vX.Y.Z"
 
 `npm pack --dry-run` 与本地测试不能验证 OIDC；只有真实 CI 发布成功才能完成端到端验证。发布后可按前述安装流程验证发布包。
 
+## 向用户说明更新方式
+
+发布通知、群消息及答复中的更新方式按以下内容撰写。用户按 `~/.jetbrains/acp.json` 的配置选一种：
+
+- **源码方式**（`args` 指向本地 `src/index.js`）：在源码目录执行 `git pull --ff-only` 和 `npm ci`（安装 pi 依赖）；拉取失败时先用 `git status` 检查分支和本地改动。
+- **npx 方式**：`args` 里的包名写成 `jetbrains-pi-acp@latest`，只需改一次，以后升级无需改版本号。
+
+完成后重启 Agent 连接（不确定怎么操作就重启 IDE）。
+
+版本号只用于说明本次发布的是哪个版本，安装与更新写法使用 `@latest`。README 和 Registry 清单中的固定版本是仓库文件规则（见「后续升级」），不照抄到更新说明里。
+
 ## 提交 Registry 收录
 
 1. Fork 并克隆 [官方 Registry](https://github.com/agentclientprotocol/registry)。

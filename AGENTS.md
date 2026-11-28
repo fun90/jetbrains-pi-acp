@@ -14,5 +14,6 @@
 ## 发布与 npm 认证
 
 - 发布、升级版本、排查 CI 发布失败或配置 npm 认证前，先读 `docs/publishing.md`，按其中步骤执行。
+- 向用户说明更新方式（发布通知、群消息、答复等）时，按 `docs/publishing.md` 的「向用户说明更新方式」撰写：npx 方式一律写 `jetbrains-pi-acp@latest`，不写具体版本号。
 - 推送 `vX.Y.Z` tag 即发布 npm `latest`：只有用户明确授权发布时才推送。
 - 认证保留 npm 2FA 与 OIDC Trusted Publishing，凭据只由维护者处理。
