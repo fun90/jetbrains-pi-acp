@@ -21,7 +21,8 @@ const send = record => writeJsonl(process.stdout, record);
 
 const models = process.env.FIXTURE_NO_MODELS ? [] : [
   { provider: 'test', id: 'first', name: '第一个模型' }, { provider: 'test', id: 'second', name: '第二个模型' }];
-let model = models[0];
+// 真实 pi 在没有任何可用模型时返回占位模型。
+let model = models[0] ?? { provider: 'unknown', id: 'unknown', name: 'unknown' };
 let thinkingLevel = 'medium';
 const levels = () => model?.id === 'second' ? ['off', 'high'] : ['off', 'low', 'medium', 'high'];
 
@@ -58,10 +59,50 @@ function run(message) {
   send({ type: 'agent_start' });
   append({ type: 'message', message: { role: 'user', content: message } });
   if (message === 'crash') process.exit(2);
+  if (message.startsWith('retry')) {
+    const start = attempt => send({ type: 'auto_retry_start', attempt, maxAttempts: 3, delayMs: 2000, errorMessage: `过载 ${attempt}` });
+    start(1);
+    // 退出前留出时间让事件送出。
+    if (message === 'retry-crash') return void setTimeout(() => process.exit(2), 50);
+    start(2);
+    if (message === 'retry-fail') {
+      send({ type: 'auto_retry_end', success: false, attempt: 2, finalError: '仍然过载' });
+      return settle(false);
+    }
+    reply('重试后的回答');
+    send({ type: 'auto_retry_end', success: true, attempt: 2 });
+    return settle(false);
+  }
   if (message === 'wait') return;
   if (message === 'error') {
     send({ type: 'message_start', message: { role: 'assistant' } });
     send({ type: 'message_end', message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: '提供商出错' } });
+    return settle(false);
+  }
+  if (message.startsWith('stream-')) {
+    // 模拟模型流式生成工具调用。
+    const update = assistantMessageEvent => send({ type: 'message_update', assistantMessageEvent });
+    const calls = [{ id: `${message}-1`, name: 'write', arguments: { path: 'a.txt', content: 'x' } },
+      { id: `${message}-2`, name: 'read', arguments: { path: 'b.txt' } }];
+    send({ type: 'message_start', message: { role: 'assistant' } });
+    for (const [contentIndex, call] of calls.entries()) {
+      update({ type: 'toolcall_start', contentIndex, id: call.id, toolName: call.name });
+    }
+    // 退出前留出时间让事件送出。
+    if (message === 'stream-crash') return void setTimeout(() => process.exit(2), 50);
+    if (message === 'stream-settle') return settle(false);
+    if (message === 'stream-error') {
+      send({ type: 'message_end', message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: '中断' } });
+      return settle(false);
+    }
+    for (const [contentIndex, toolCall] of calls.entries()) update({ type: 'toolcall_end', contentIndex, toolCall });
+    send({ type: 'message_end', message: { role: 'assistant', stopReason: 'toolUse',
+      content: calls.map(call => ({ type: 'toolCall', ...call })) } });
+    for (const call of calls) {
+      const event = { toolCallId: call.id, toolName: call.name };
+      send({ type: 'tool_execution_start', ...event, args: call.arguments });
+      send({ type: 'tool_execution_end', ...event, isError: false, result: { content: [] } });
+    }
     return settle(false);
   }
   if (message === 'permission' || message === 'write') {
@@ -202,10 +243,23 @@ readJsonl(process.stdin, request => {
         setTimeout(() => run('自动'), 10);
         return;
       }
+      // 模拟一直不返回的扩展命令。
+      if (message === '/hang') return;
+      if (message === '/late') {
+        // 模拟取消后 pi 才受理提示并开始运行。
+        setTimeout(() => {
+          respond({ disposition: 'started' });
+          run('wait');
+        }, 300);
+        return;
+      }
       if (active) {
         queued.push(message);
         return respond({ disposition: 'queued' });
       }
+      if (message === 'no-key') return respond(undefined, 'No API key found for test.\n\nUse /login to log into a provider.');
+      if (message === 'expired') return respond(undefined, 'Authentication failed for "test". Credentials may have expired.');
+      if (message === 'rejected') return respond(undefined, 'upstream 403 permission denied');
       respond({ disposition: 'started' });
       return run(message);
     }

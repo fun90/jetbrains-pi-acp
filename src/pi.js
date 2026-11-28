@@ -48,13 +48,14 @@ export class PiProcess {
     writeJsonl(this.child.stdin, record);
   }
 
+  // timeout 为 0 时不设超时，等到响应或进程退出。
   request(type, params = {}, timeout = 30000) {
     return new Promise((resolve, reject) => {
       const id = `pi-${++this.sequence}`;
-      const timer = setTimeout(() => {
+      const timer = timeout ? setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(t('piCommandTimeout', { type })));
-      }, timeout);
+      }, timeout) : undefined;
       this.pending.set(id, { resolve, reject, timer });
       try { this.send({ ...params, type, id }); }
       catch (error) {

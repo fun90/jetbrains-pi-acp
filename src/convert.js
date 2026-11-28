@@ -34,7 +34,24 @@ export function convertMcp(servers = []) {
   return result;
 }
 
-// ACP 提示内容块转成 pi prompt 命令的 message 与 images。
+// Air 把选中的文件、提交等附件以 "context: renderer=..." 块追加在输入之后；识别命令和生成兜底标题时需去掉。
+export const stripAirContext = text => text.split(/(?:^|\r?\n\r?\n)context: renderer=/)[0];
+
+// 用户输入的文字：只取文本块，不含资源附件和 Air 附件块。
+export const typedText = blocks => stripAirContext(blocks.filter(block => block?.type === 'text')
+  .map(block => block.text).join('\n\n')).trim();
+
+// 用于识别本地命令：Air 会把附件的 @ 引用插在命令之前，需一并去掉。
+export const commandText = blocks => typedText(blocks).replace(/^(?:@\S+\s+)+/, '');
+
+// 会话尚未命名时的标题：去掉 Air 附件块和开头的附件引用后压成一行；只有附件时保留引用。
+export function fallbackTitle(message) {
+  const text = stripAirContext(message).trim();
+  const words = text.replace(/^(?:(?:@|Referenced resource: )\S+\s*)+/, '') || text;
+  return Array.from(words.replace(/\s+/g, ' ')).slice(0, 80).join('') || null;
+}
+
+// ACP 提示内容块转成 pi prompt 命令的 message 与 images。资源标签发给模型，固定使用英文。
 export function convertPrompt(blocks) {
   if (!Array.isArray(blocks) || !blocks.length) throw invalid(t('promptEmpty'));
   const text = [];
@@ -45,9 +62,9 @@ export function convertPrompt(blocks) {
              typeof block.mimeType === 'string' && block.mimeType.startsWith('image/')) {
       images.push({ type: 'image', data: block.data, mimeType: block.mimeType });
     } else if (block?.type === 'resource' && typeof block.resource?.text === 'string') {
-      text.push(t('fileContext', { uri: block.resource.uri, text: block.resource.text }));
+      text.push(`File context (${block.resource.uri}):\n${block.resource.text}`);
     } else if (block?.type === 'resource_link' && typeof block.uri === 'string') {
-      text.push(t('resourceLink', { uri: block.uri }));
+      text.push(`Referenced resource: ${block.uri}`);
     } else throw invalid(t('promptContentUnsupported', { type: block?.type }));
   }
   return { message: text.join('\n\n'), ...(images.length ? { images } : {}) };

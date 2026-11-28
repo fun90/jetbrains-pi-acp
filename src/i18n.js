@@ -40,6 +40,12 @@ const zh = {
   refreshUsageFailed: '刷新用量失败：{error}',
   modelFailed: '模型执行失败',
   retryFailed: '模型重试失败',
+  retryRunning: '模型请求失败，{seconds} 秒后重试（{attempt}/{max}）',
+  retrySucceeded: '模型重试成功',
+  compactionRunning: '正在压缩上下文',
+  compactionCompleted: '上下文已压缩',
+  compactionFailed: '上下文压缩失败',
+  compactionCancelled: '上下文压缩已取消',
 
   // 配置
   configModel: '模型',
@@ -72,8 +78,6 @@ const zh = {
   // 提示内容
   promptEmpty: 'prompt 必须包含内容',
   promptContentUnsupported: '不支持的提示内容：{type}',
-  fileContext: '文件上下文（{uri}）：\n{text}',
-  resourceLink: '引用资源：{uri}',
 
   // MCP
   mcpServersArray: 'mcpServers 必须是数组',
@@ -154,6 +158,12 @@ const en = {
   refreshUsageFailed: 'Failed to refresh usage: {error}',
   modelFailed: 'Model execution failed',
   retryFailed: 'Model retry failed',
+  retryRunning: 'Model request failed; retrying in {seconds}s ({attempt}/{max})',
+  retrySucceeded: 'Model retry succeeded',
+  compactionRunning: 'Compacting context',
+  compactionCompleted: 'Context compacted',
+  compactionFailed: 'Context compaction failed',
+  compactionCancelled: 'Context compaction cancelled',
 
   configModel: 'Model',
   configThinking: 'Thinking Level',
@@ -183,8 +193,6 @@ const en = {
 
   promptEmpty: 'prompt must not be empty',
   promptContentUnsupported: 'Unsupported prompt content: {type}',
-  fileContext: 'File context ({uri}):\n{text}',
-  resourceLink: 'Referenced resource: {uri}',
 
   mcpServersArray: 'mcpServers must be an array',
   mcpNameInvalid: 'MCP names may only contain letters, digits, underscores, and hyphens',

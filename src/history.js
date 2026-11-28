@@ -1,5 +1,6 @@
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
+import { fallbackTitle } from './convert.js';
 import { invalid } from './errors.js';
 import { t } from './i18n.js';
 
@@ -40,7 +41,7 @@ export class History {
     }
     const all = await this.sessions(cwd ?? undefined);
     const page = all.slice(offset, offset + PAGE_SIZE).map(session => ({
-      sessionId: session.id, cwd: session.cwd, title: session.name || session.firstMessage || null,
+      sessionId: session.id, cwd: session.cwd, title: session.name || fallbackTitle(session.firstMessage),
       updatedAt: session.modified.toISOString(),
     }));
     return { sessions: page, ...(offset + PAGE_SIZE < all.length ? { nextCursor: String(offset + PAGE_SIZE) } : {}) };

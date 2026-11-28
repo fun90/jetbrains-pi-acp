@@ -42,6 +42,11 @@ test('本机 pi：授权、文件 diff、本地命令及历史回放（本地模
           stopReason: call ? 'toolUse' : 'stop', timestamp: Date.now(),
           usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15,
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+        if (call) {
+          stream.push({ type: 'start', partial: message });
+          stream.push({ type: 'toolcall_start', contentIndex: 0, partial: message });
+          stream.push({ type: 'toolcall_end', contentIndex: 0, toolCall: message.content[0], partial: message });
+        }
         stream.push({ type: 'done', reason: message.stopReason, message });
         stream.end();
         return stream;
@@ -74,6 +79,10 @@ test('本机 pi：授权、文件 diff、本地命令及历史回放（本地模
   assert.deepEqual(final('smoke-1-0').content.at(-1), { type: 'diff', path: target, oldText: null, newText: '第一行\nold\n' });
   assert.deepEqual(final('smoke-1-1').content.at(-1), { type: 'diff', path: target, oldText: '第一行\nold\n', newText: '第一行\nnew\n' });
   assert.ok(final('smoke-1-2'));
+  // 生成参数时即展示工具调用，后续只更新同一调用。
+  const first = updates.filter(update => update.toolCallId === 'smoke-1-0');
+  assert.deepEqual([first[0].sessionUpdate, first[0].status, first[0].title], ['tool_call', 'pending', 'write']);
+  assert.equal(first.filter(update => update.sessionUpdate === 'tool_call').length, 1);
   assert.equal(c.records.some(record => record.method === 'session/request_permission' &&
     record.params.toolCall.toolCallId === 'smoke-1-2'), false);
   assert.match(messageText(updates), /完成/);
@@ -106,4 +115,21 @@ test('本机 pi：授权、文件 diff、本地命令及历史回放（本地模
   assert.deepEqual(replay.find(update => update.toolCallId === 'smoke-1-1' && update.status === 'completed').content.at(-1),
     { type: 'diff', path: target, oldText: '第一行\nold\n', newText: '第一行\nnew\n' });
   assert.match(messageText(replay), /完成/);
+});
+
+test('本机 pi：没有任何凭据时新建会话返回需要认证', { skip: !process.env.PI_ACP_SMOKE, timeout: 60000 }, async t => {
+  const directory = await realpath(await mkdtemp(join(tmpdir(), 'pi-acp-auth-')));
+  // 清除本机的提供商环境变量，避免它们让 pi 有可用模型。
+  const env = Object.fromEntries(Object.keys(process.env).filter(name => /_API_KEY$|_TOKEN$|^AWS_/.test(name))
+    .map(name => [name, undefined]));
+  const c = await client(t, { piCommand: null, sessionDir: join(directory, 'sessions'),
+    env: { ...env, PI_CODING_AGENT_DIR: join(directory, 'agent') },
+    args: ['--offline', '--no-extensions', '--no-skills', '--no-context-files', '--no-mcp'] });
+  t.after(async () => {
+    await c.close();
+    await removeDirectory(directory);
+  });
+  await initialize(c, { _meta: { 'terminal-auth': true } });
+  const response = await c.request('session/new', { cwd: directory, mcpServers: [] });
+  assert.equal(response.error?.code, -32000, JSON.stringify(response));
 });

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PiProcess } from './pi.js';
-import { convertPrompt } from './convert.js';
+import { commandText, convertPrompt, fallbackTitle, typedText } from './convert.js';
 import { authRequired, invalid } from './errors.js';
 import { READ_ONLY_TOOLS, toolCall, toolResult } from './tools.js';
 import { displayOptions, fencePreviews } from './dialog.js';
@@ -14,11 +14,15 @@ export const extensionPath = fileURLToPath(new URL('../extensions/acp.ts', impor
 // 权限模式 id → i18n key；说明文案的 key 为 `${key}Description`。
 const MODES = { plan: 'modePlan', 'read-only': 'modeReadOnly', standard: 'modeStandard', full: 'modeFull' };
 const RESTRICTED = ['plan', 'read-only'];
-const LOCAL_COMMANDS = /^\/(status|compact|reload)(?:\s|$)/;
+const LOCAL_COMMANDS = /^\/(status|compact|reload)(?:\s+([\s\S]*))?$/;
 const modelKey = model => `${model.provider}/${model.id}`;
+// pi 发起请求前检查凭据失败时的错误开头。
+export const AUTH_FAILURE = /^(?:No API key found for |Authentication failed for )/;
 // pi-background-tasks 的任务状态 → i18n key。
 const BACKGROUND_STATUS = { running: 'backgroundRunning', succeeded: 'backgroundSucceeded', failed: 'backgroundFailed',
   cancelled: 'backgroundCancelled', timed_out: 'backgroundTimedOut', output_limit: 'backgroundOutputLimit' };
+// 命名扩展通常在回复后几秒内完成；超过此时间仍未命名才推送兜底标题。
+const TITLE_DELAY = 10000;
 
 // 一个 ACP 会话，对应一个 pi RPC 子进程。负责配置、提示回合、pi 事件到 session/update 的转换和历史回放。
 export class Session {
@@ -36,6 +40,10 @@ export class Session {
     this.backgroundTimer = null;
     this.backgroundPendingFinish = false;
     this.messageId = randomUUID();
+    this.cards = new Set();
+    this.retryId = null;
+    this.titled = false;
+    this.titleTimer = null;
   }
 
   get busy() {
@@ -71,12 +79,16 @@ export class Session {
     this.clearBackgroundTimer();
     this.backgroundPendingFinish = false;
     this.agent.cancelRequests(this);
+    for (const toolCallId of [...this.tools.keys(), ...this.cards]) this.failCall(toolCallId);
+    this.tools.clear();
+    this.cards.clear();
     if (this.turn) { this.turn.error = error; this.turn.done(); }
   }
 
   async close() {
     this.changing = true;
     this.clearBackgroundTimer();
+    clearTimeout(this.titleTimer);
     this.backgroundPendingFinish = false;
     try { await this.cancel(); } catch { /* 进程已退出时直接关闭。 */ }
     this.agent.cancelRequests(this);
@@ -89,10 +101,12 @@ export class Session {
   async refreshModels(state) {
     state ??= await this.pi.request('get_state');
     const models = (await this.pi.request('get_available_models'))?.models ?? [];
-    if (state.model && !models.some(model => modelKey(model) === modelKey(state.model))) models.push(state.model);
-    const current = state.model ?? models[0];
+    // 没有可用模型时 pi 返回占位模型 unknown/unknown，不能当作当前模型。
+    const selected = state.model && modelKey(state.model) !== 'unknown/unknown' ? state.model : undefined;
+    if (selected && !models.some(model => modelKey(model) === modelKey(selected))) models.push(selected);
+    const current = selected ?? models[0];
     if (!current) throw authRequired(t('noModels'));
-    if (!state.model) await this.pi.request('set_model', { provider: current.provider, modelId: current.id });
+    if (!selected) await this.pi.request('set_model', { provider: current.provider, modelId: current.id });
     this.models = models;
     this.modelId = modelKey(current);
     await this.refreshThinking();
@@ -182,23 +196,30 @@ export class Session {
     this.clearBackgroundTimer();
     this.clearFinishedBackground();
     const prompt = convertPrompt(blocks);
-    const text = prompt.message.trim();
-    if (!prompt.images && LOCAL_COMMANDS.test(text)) return this.local(text);
+    // 带图片的输入按普通提示处理。
+    const command = !prompt.images && LOCAL_COMMANDS.exec(commandText(blocks));
+    if (command) return this.local(command[1], command[2]);
     const turn = { starts: 0, settled: false, disposition: null, cancelled: false, error: null, stopReason: 'end_turn' };
     turn.finished = new Promise(resolve => { turn.done = resolve; });
     this.turn = turn;
     try {
       // pi 忙于扩展发起的运行时 followUp 会排队，空闲时直接开始。
-      const accepted = await this.pi.request('prompt', { ...prompt, streamingBehavior: 'followUp' });
-      turn.disposition = accepted?.disposition ?? 'handled';
-      if (turn.cancelled) await this.abort();
-      this.check();
-      await turn.finished;
+      // 扩展命令执行完 pi 才响应，期间可能一直等用户填表，因此不设超时；取消后不再等待响应。
+      const request = this.pi.request('prompt', { ...prompt, streamingBehavior: 'followUp' }, 0);
+      const accepted = await Promise.race([request, turn.finished.then(() => null)]);
+      if (accepted === null) this.abortLate(request);
+      else {
+        turn.disposition = accepted?.disposition ?? 'handled';
+        if (turn.cancelled) await this.abort();
+        this.check();
+        await turn.finished;
+      }
     } catch (error) {
-      if (!turn.cancelled) throw error;
+      if (!turn.cancelled) throw AUTH_FAILURE.test(error.message) ? authRequired(error.message) : error;
     } finally {
       this.turn = null;
       this.blocks.clear();
+      if (turn.starts) this.scheduleTitle(blocks);
     }
     void this.usage().catch(() => {});
     if (turn.cancelled) return { stopReason: 'cancelled' };
@@ -219,6 +240,26 @@ export class Session {
     await this.pi.request('abort');
   }
 
+  // 回合结束后才到达的响应：pi 若仍开始了这次运行，且当前没有新回合，立即中止。
+  abortLate(request) {
+    request.then(accepted => {
+      if (accepted?.disposition === 'started' && !this.turn) return this.abort();
+    }).catch(() => {});
+  }
+
+  // 只处理新会话的首条消息；已保存会话的兜底标题由历史列表提供。
+  scheduleTitle(blocks) {
+    if (this.path || this.titled) return;
+    this.titled = true;
+    const title = fallbackTitle(typedText(blocks));
+    if (!title) return;
+    // 兜底标题只发给客户端，不写入 pi 会话名，命名扩展之后仍可命名并覆盖。
+    this.titleTimer = setTimeout(() => {
+      if (!this.title && !this.failure && !this.pi.closed) this.update({ sessionUpdate: 'session_info_update', title });
+    }, TITLE_DELAY);
+    this.titleTimer.unref?.();
+  }
+
   async cancel() {
     this.agent.cancelRequests(this);
     if (this.command) {
@@ -229,17 +270,17 @@ export class Session {
     if (!turn || turn.cancelled) return;
     turn.cancelled = true;
     await this.abort();
-    if (!this.running) turn.done();
+    if (!this.running || !turn.disposition) turn.done();
   }
 
-  async local(text) {
+  // /status 和 /reload 不接受参数，多余内容忽略；/compact 的参数作为摘要要求。
+  async local(name, customInstructions) {
     const command = { cancelled: false };
     this.command = command;
     try {
-      if (text === '/status') await this.status();
-      else if (text === '/reload') await this.reload();
+      if (name === 'status') await this.status();
+      else if (name === 'reload') await this.reload();
       else {
-        const customInstructions = text.slice('/compact'.length).trim();
         const result = await this.pi.request('compact', customInstructions ? { customInstructions } : {}, 300000);
         this.text(t('compactDone', { before: result?.tokensBefore ?? '?', after: result?.estimatedTokensAfter ?? '?' }));
         await this.usage();
@@ -301,6 +342,7 @@ export class Session {
         break;
       case 'agent_settled':
         this.running = false;
+        this.failUnexecutedTools();
         if (this.backgroundPendingFinish) this.publishBackground();
         if (turn) {
           turn.settled = true;
@@ -316,6 +358,11 @@ export class Session {
         break;
       case 'message_update': {
         const delta = event.assistantMessageEvent;
+        // 模型生成参数期间就展示工具调用，写大文件时界面不至于没有动静。
+        if (delta?.type === 'toolcall_start') this.announceTool(delta.id, delta.toolName);
+        if (delta?.type === 'toolcall_end') {
+          this.announceTool(delta.toolCall?.id, delta.toolCall?.name, delta.toolCall?.arguments);
+        }
         if (delta?.type !== 'text_delta' && delta?.type !== 'thinking_delta') break;
         this.blocks.set(delta.contentIndex, (this.blocks.get(delta.contentIndex) ?? '') + delta.delta);
         this.chunk(delta.type === 'text_delta' ? 'text' : 'thinking', delta.delta);
@@ -331,6 +378,7 @@ export class Session {
           const streamed = this.blocks.get(index) ?? '';
           if (text?.startsWith(streamed) && text.length > streamed.length) this.chunk(block.type, text.slice(streamed.length));
         }
+        if (['error', 'aborted'].includes(message.stopReason)) this.failUnexecutedTools();
         if (!turn) break;
         if (message.stopReason === 'error') turn.error = new Error(message.errorMessage || t('modelFailed'));
         else if (message.stopReason === 'length') turn.stopReason = 'max_tokens';
@@ -343,14 +391,26 @@ export class Session {
         if (entry?.type === 'custom_message' && entry.customType === 'background-task-finished') this.trackBackground(entry.details);
         break;
       }
+      case 'auto_retry_start':
+        this.retryId ??= `retry-${randomUUID()}`;
+        this.card(this.retryId, 'in_progress', t('retryRunning', { attempt: event.attempt, max: event.maxAttempts,
+          seconds: Math.round(event.delayMs / 1000) }), event.errorMessage);
+        break;
       case 'auto_retry_end':
+        if (this.retryId) {
+          this.card(this.retryId, event.success ? 'completed' : 'failed',
+            t(event.success ? 'retrySucceeded' : 'retryFailed'), event.success ? undefined : event.finalError);
+          this.retryId = null;
+        }
         if (turn && !event.success) turn.error = new Error(event.finalError || t('retryFailed'));
         break;
-      case 'tool_execution_start':
-        this.tools.set(event.toolCallId, { name: event.toolName, args: event.args });
-        this.update({ sessionUpdate: 'tool_call', ...toolCall(this.cwd, event.toolCallId, event.toolName, event.args),
+      case 'tool_execution_start': {
+        const sessionUpdate = this.tools.has(event.toolCallId) ? 'tool_call_update' : 'tool_call';
+        this.tools.set(event.toolCallId, { name: event.toolName, args: event.args, started: true });
+        this.update({ sessionUpdate, ...toolCall(this.cwd, event.toolCallId, event.toolName, event.args),
           status: READ_ONLY_TOOLS.includes(event.toolName) ? 'in_progress' : 'pending' });
         break;
+      }
       case 'tool_execution_update':
       case 'tool_execution_end': {
         const done = event.type === 'tool_execution_end';
@@ -363,13 +423,16 @@ export class Session {
         break;
       }
       case 'compaction_start':
-        this.compactionId = randomUUID();
-        this.compaction('in_progress');
+        this.compactionId = `compaction-${randomUUID()}`;
+        this.card(this.compactionId, 'in_progress', t('compactionRunning'));
         break;
       case 'compaction_end':
-        this.compaction(event.result ? 'completed' : event.aborted ? 'cancelled' : 'failed', event.result?.summary, event.errorMessage);
+        if (event.result) this.card(this.compactionId, 'completed', t('compactionCompleted'), event.result.summary);
+        else if (event.aborted) this.card(this.compactionId, 'failed', t('compactionCancelled'));
+        else this.card(this.compactionId, 'failed', t('compactionFailed'), event.errorMessage);
         break;
       case 'session_info_changed':
+        this.title = event.name;
         this.update({ sessionUpdate: 'session_info_update', title: event.name ?? null });
         break;
       case 'thinking_level_changed':
@@ -396,11 +459,36 @@ export class Session {
       messageId: thought ? `${messageId}:thought` : messageId, content: { type: 'text', text } });
   }
 
-  compaction(status, summary, error, compactionId = this.compactionId) {
-    if (this.agent.clientCapabilities.session?.compaction == null) return;
-    this.update({ sessionUpdate: 'compaction_update', compactionId, status,
-      ...(typeof summary === 'string' ? { summary: [{ type: 'text', text: summary }] } : {}),
-      ...(status === 'failed' && error ? { error } : {}) });
+  // 工具调用尚未执行：首次发送 tool_call，参数完整后补充标题、输入和位置。
+  announceTool(toolCallId, name, args) {
+    if (!toolCallId) return;
+    const known = this.tools.get(toolCallId);
+    if (known?.started) return;
+    this.tools.set(toolCallId, { name, args, started: false });
+    this.update({ sessionUpdate: known ? 'tool_call_update' : 'tool_call',
+      ...toolCall(this.cwd, toolCallId, name, args), status: 'pending' });
+  }
+
+  failCall(toolCallId) {
+    this.update({ sessionUpdate: 'tool_call_update', toolCallId, status: 'failed' });
+  }
+
+  // 消息出错、中止或运行结束时，已展示但从未执行的工具调用标记为失败。
+  failUnexecutedTools() {
+    for (const [toolCallId, tool] of this.tools) {
+      if (tool.started) continue;
+      this.tools.delete(toolCallId);
+      this.failCall(toolCallId);
+    }
+  }
+
+  // JetBrains Air 不支持 compaction_update 和 notice，压缩与重试用标准工具调用卡片展示。
+  card(toolCallId, status, title, text) {
+    const sessionUpdate = this.cards.has(toolCallId) ? 'tool_call_update' : 'tool_call';
+    if (status === 'in_progress') this.cards.add(toolCallId);
+    else this.cards.delete(toolCallId);
+    this.update({ sessionUpdate, toolCallId, title, kind: 'other', status,
+      ...(text ? { content: [{ type: 'content', content: { type: 'text', text } }] } : {}) });
   }
 
   // ---- 后台任务 ----
@@ -515,7 +603,7 @@ export class Session {
 
   // 扩展的确认、选择和输入对话框转成表单 elicitation；客户端不支持时按取消处理。
   async elicit(event) {
-    if (this.agent.clientCapabilities.elicitation?.form == null || !(this.turn || this.command) ||
+    if (this.agent.clientCapabilities.elicitation?.form == null || !(this.turn || this.command) || this.turn?.cancelled ||
         (event.method === 'select' && !(Array.isArray(event.options) && event.options.every(option => typeof option === 'string')))) {
       this.respond(event, { cancelled: true });
       return;
@@ -547,7 +635,7 @@ export class Session {
     const tools = new Map();
     for (const entry of branch.reverse()) {
       if (entry.type === 'compaction') {
-        this.compaction('completed', entry.summary, undefined, entry.id);
+        this.card(`compaction-${entry.id}`, 'completed', t('compactionCompleted'), entry.summary);
         continue;
       }
       const message = entry.type === 'message' ? entry.message : null;

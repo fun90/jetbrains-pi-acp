@@ -1,10 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { access, readdir } from 'node:fs/promises';
+import { access, mkdtemp, readFile, readdir } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { client, initialize, messageText, newSession, prompt, root } from './helpers.js';
-import { convertMcp, convertPrompt } from '../src/convert.js';
+import { client, fixture, initialize, messageText, newSession, prompt, removeDirectory, root } from './helpers.js';
+import { convertMcp, convertPrompt, fallbackTitle } from '../src/convert.js';
+import { AUTH_FAILURE } from '../src/session.js';
+import { PiProcess } from '../src/pi.js';
+import { Agent } from '../src/agent.js';
+import { resolvePi } from '../src/pi-command.js';
 import { t as msg } from '../src/i18n.js';
+
+const cards = updates => updates.filter(update => /^(?:compaction|retry)-/.test(update.toolCallId));
+const textContent = text => [{ type: 'content', content: { type: 'text', text } }];
 
 test('initialize 声明 ACP v1 稳定能力，未初始化、未知方法和无效消息返回标准错误', async t => {
   const c = await client(t);
@@ -122,6 +130,39 @@ test('等待授权时取消会结束请求并拒绝工具；$/cancel_request 取
   assert.equal((await prompt(c, sid, '继续')).result.stopReason, 'end_turn');
 });
 
+test('提示响应到达前可以取消；迟到的运行被中止，会话可继续使用', async t => {
+  const c = await client(t);
+  await initialize(c);
+  const { sessionId: sid } = await newSession(c);
+  for (const text of ['/hang', '/late']) {
+    const running = prompt(c, sid, text);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    c.send({ jsonrpc: '2.0', method: 'session/cancel', params: { sessionId: sid } });
+    assert.deepEqual((await running).result, { stopReason: 'cancelled' }, text);
+  }
+  // 等 /late 的迟到运行开始并被中止；未中止时后续提示会排队且不会结束。
+  await new Promise(resolve => setTimeout(resolve, 500));
+  const from = c.records.length;
+  assert.equal((await prompt(c, sid, '继续')).result.stopReason, 'end_turn');
+  assert.equal(messageText(c.updates(sid, from)), '你好\u2028世界');
+});
+
+test('不设超时的 pi 请求一直等待到进程退出', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const pi = new PiProcess({ command: process.execPath, args: ['-e', 'process.stdin.resume()'], cwd: root,
+    onEvent() {}, onFailure() {} });
+  let state = 'pending';
+  const done = pi.request('prompt', {}, 0).catch(() => { state = 'rejected'; });
+  const limited = assert.rejects(pi.request('get_state'), { message: msg('piCommandTimeout', { type: 'get_state' }) });
+  t.mock.timers.tick(3600000);
+  await limited;
+  assert.equal(state, 'pending');
+  t.mock.timers.reset();
+  await pi.close();
+  await done;
+  assert.equal(state, 'rejected');
+});
+
 test('扩展对话框按客户端能力转成表单，扩展命令通知显示为回答，扩展自行发起的运行期间提示排队', async t => {
   const c = await client(t);
   await initialize(c, { elicitation: { form: {} } });
@@ -206,20 +247,125 @@ test('不支持表单的客户端取消扩展对话框；模型错误返回 JSON
 
 test('本地命令 /status、/compact、/reload', async t => {
   const c = await client(t);
-  await initialize(c, { session: { compaction: {} } });
+  await initialize(c);
   const { sessionId: sid } = await newSession(c);
   let from = c.records.length;
   await prompt(c, sid, '/status');
   assert.match(messageText(c.updates(sid, from)), /test\/first[\s\S]*medium[\s\S]*\$0\.0010[\s\S]*123 \/ 1000/);
   from = c.records.length;
   await prompt(c, sid, '/compact 保留口令');
-  const compaction = c.updates(sid, from).filter(update => update.sessionUpdate === 'compaction_update');
-  assert.deepEqual(compaction.map(update => update.status), ['in_progress', 'completed']);
-  assert.deepEqual(compaction[1].summary, [{ type: 'text', text: '保留口令' }]);
+  const compaction = cards(c.updates(sid, from));
+  assert.deepEqual(compaction.map(update => [update.sessionUpdate, update.status, update.title]), [
+    ['tool_call', 'in_progress', msg('compactionRunning')], ['tool_call_update', 'completed', msg('compactionCompleted')]]);
+  assert.equal(compaction[0].toolCallId, compaction[1].toolCallId);
+  assert.deepEqual(compaction[1].content, textContent('保留口令'));
   from = c.records.length;
   await prompt(c, sid, '/reload');
   const options = c.updates(sid, from).find(update => update.sessionUpdate === 'config_option_update').configOptions;
   assert.ok(options[0].options.some(option => option.value === 'test/reloaded'));
+});
+
+test('带附件或多余参数的本地命令按命令名执行；带图片按普通提示处理', async t => {
+  const c = await client(t);
+  await initialize(c);
+  const { sessionId: sid } = await newSession(c);
+  const context = '\r\n\r\ncontext: renderer=paths\r\nsrc/a.js';
+  const link = { type: 'resource_link', uri: 'file:///a.txt', name: 'a.txt' };
+  const text = value => ({ type: 'text', text: value });
+  const send = async (...blocks) => {
+    const from = c.records.length;
+    assert.equal((await c.request('session/prompt', { sessionId: sid, prompt: blocks })).result.stopReason, 'end_turn');
+    return c.updates(sid, from);
+  };
+  // Air 实际格式：附件引用排在命令之前，附件块在末尾。
+  const air = '\n\n\n\ncontext: renderer=paths title=Files source=manualPaths project=/p\npath: /p/acp-check/附件.txt';
+  for (const blocks of [[text(`/status${context}`)], [text('/status'), text('context: renderer=paths\nsrc/a.js')],
+    [text('/status please')], [text('/status'), link], [text(`@acp-check/附件.txt \n/status${air}`)],
+    [text('@a.txt @b.txt\r\n/status')]]) {
+    const updates = await send(...blocks);
+    assert.match(messageText(updates), /123 \/ 1000/);
+    assert.deepEqual(cards(updates), []);
+  }
+  const reloaded = await send(text(`/reload now${context}`), link);
+  assert.ok(reloaded.some(update => update.sessionUpdate === 'config_option_update'));
+  assert.deepEqual(cards(reloaded), []);
+  const compacted = await send(text(`@a.txt \n/compact 保留口令${context}`), link);
+  assert.deepEqual(cards(compacted).at(-1).content, textContent('保留口令'));
+  const mentioned = await send(text('@a.txt 说明一下 /status'));
+  assert.match(messageText(mentioned), /世界/);
+  const ordinary = await send(text('/status'), { type: 'image', data: 'AA==', mimeType: 'image/png' });
+  assert.match(messageText(ordinary), /世界/);
+});
+
+test('模型重试以卡片展示：同一轮重试更新同一张，成功、失败和 pi 退出时收尾', async t => {
+  const c = await client(t);
+  await initialize(c);
+  const { sessionId: sid } = await newSession(c);
+  const running = attempt => msg('retryRunning', { attempt, max: 3, seconds: 2 });
+  let from = c.records.length;
+  assert.equal((await prompt(c, sid, 'retry')).result.stopReason, 'end_turn');
+  let retry = cards(c.updates(sid, from));
+  assert.deepEqual(retry.map(update => [update.sessionUpdate, update.status, update.title]), [
+    ['tool_call', 'in_progress', running(1)], ['tool_call_update', 'in_progress', running(2)],
+    ['tool_call_update', 'completed', msg('retrySucceeded')]]);
+  assert.equal(new Set(retry.map(update => update.toolCallId)).size, 1);
+  from = c.records.length;
+  assert.equal((await prompt(c, sid, 'retry-fail')).error.message, '仍然过载');
+  const failed = cards(c.updates(sid, from));
+  assert.notEqual(failed[0].toolCallId, retry[0].toolCallId);
+  assert.deepEqual([failed.at(-1).status, failed.at(-1).content], ['failed', textContent('仍然过载')]);
+  from = c.records.length;
+  assert.ok((await prompt(c, sid, 'retry-crash')).error);
+  retry = cards(c.updates(sid, from));
+  assert.deepEqual(retry.map(update => update.status), ['in_progress', 'failed']);
+});
+
+test('工具调用在生成参数时提前展示，执行时更新同一调用；未执行的调用最终标记失败', async t => {
+  const c = await client(t);
+  await initialize(c);
+  const { sessionId: sid } = await newSession(c);
+  const run = async text => {
+    const from = c.records.length;
+    const response = await prompt(c, sid, text);
+    const updates = c.updates(sid, from);
+    return { response, of: index => updates.filter(update => update.toolCallId === `${text}-${index}`) };
+  };
+  const normal = await run('stream-tool');
+  assert.equal(normal.response.result.stopReason, 'end_turn');
+  const write = normal.of(1);
+  assert.deepEqual(write.map(update => [update.sessionUpdate, update.status]), [['tool_call', 'pending'],
+    ['tool_call_update', 'pending'], ['tool_call_update', 'pending'], ['tool_call_update', 'completed']]);
+  assert.deepEqual([write[0].title, write[0].kind, write[0].rawInput], ['write', 'edit', undefined]);
+  assert.deepEqual([write[1].title, write[1].locations], ['write a.txt', [{ path: join(root, 'a.txt') }]]);
+  assert.deepEqual(normal.of(2).map(update => update.status), ['pending', 'pending', 'in_progress', 'completed']);
+  for (const text of ['stream-error', 'stream-settle', 'stream-crash']) {
+    const { response, of } = await run(text);
+    if (text !== 'stream-settle') assert.ok(response.error, text);
+    for (const index of [1, 2]) {
+      assert.deepEqual(of(index).map(update => [update.sessionUpdate, update.status]),
+        [['tool_call', 'pending'], ['tool_call_update', 'failed']], text);
+    }
+  }
+});
+
+test('回放压缩记录', async t => {
+  const c = await client(t);
+  await initialize(c);
+  const { sessionId: sid } = await newSession(c);
+  await prompt(c, sid, '第一条');
+  await prompt(c, sid, '/compact 摘要内容');
+  await c.request('session/close', { sessionId: sid });
+  const from = c.records.length;
+  await c.request('session/load', { sessionId: sid, cwd: root, mcpServers: [] });
+  const replayed = cards(c.updates(sid, from));
+  assert.deepEqual(replayed.map(update => [update.sessionUpdate, update.status, update.content]),
+    [['tool_call', 'completed', textContent('摘要内容')]]);
+});
+
+test('资源附件标签固定使用英文', () => {
+  assert.equal(convertPrompt([{ type: 'resource', resource: { uri: 'file:///a', text: 'x' } },
+    { type: 'resource_link', uri: 'file:///b' }]).message,
+  'File context (file:///a):\nx\n\nReferenced resource: file:///b');
 });
 
 test('MCP 配置写入扩展临时配置；无效配置被拒绝', async t => {
@@ -240,6 +386,65 @@ test('MCP 配置写入扩展临时配置；无效配置被拒绝', async t => {
   const { sessionId: sid } = await newSession(c, { mcpServers: [{ name: 'tool', command: 'node', args: [], env: [] }] });
   await prompt(c, sid, 'mcp');
   assert.deepEqual(JSON.parse(messageText(c.updates(sid))).mcpServers.tool.command, 'node');
+});
+
+test('兜底标题去掉开头的附件引用和 Air 附件块', () => {
+  const context = '\n\n\n\ncontext: renderer=paths title=Files source=manualPaths project=/p\npath: /p/a.txt';
+  for (const [message, title] of [
+    [`@acp-check/附件.txt\r\n请只回复“好”。\r\n这是第二行${context}`, '请只回复“好”。 这是第二行'],
+    ['@D:/a/models.json  @b.ts 换模型', '换模型'],
+    ['Referenced resource: file:///x\n\n说明', '说明'],
+    ['看看 @a.txt', '看看 @a.txt'],
+    [`@a.txt${context}`, '@a.txt'],
+    ['长'.repeat(100), '长'.repeat(80)],
+    ['', null],
+  ]) assert.equal(fallbackTitle(message), title, message);
+});
+
+test('新会话超时未命名时推送兜底标题，之后的命名覆盖它', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'pi-acp-test-'));
+  const previous = process.env.PI_CODING_AGENT_SESSION_DIR;
+  process.env.PI_CODING_AGENT_SESSION_DIR = directory;
+  const records = [];
+  const agent = new Agent({ ...resolvePi(fixture, []), send: record => records.push(record) });
+  t.after(async () => {
+    t.mock.timers.reset();
+    await agent.close();
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR;
+    else process.env.PI_CODING_AGENT_SESSION_DIR = previous;
+    await removeDirectory(directory);
+  });
+  let id = 0;
+  const call = async (method, params) => {
+    const requestId = ++id;
+    await agent.receive({ jsonrpc: '2.0', id: requestId, method, params });
+    return records.find(record => record.id === requestId && !record.method).result;
+  };
+  const open = async () => (await call('session/new', { cwd: root, mcpServers: [] })).sessionId;
+  const ask = (sessionId, text) => call('session/prompt', { sessionId, prompt: [{ type: 'text', text }] });
+  const rename = (sessionId, name) => agent.sessions.get(sessionId).pi.request('set_session_name', { name });
+  const titles = () => records.map(record => record.params?.update)
+    .filter(update => update?.sessionUpdate === 'session_info_update').map(update => update.title);
+  await call('initialize', { protocolVersion: 1 });
+  const slow = await open();
+  const quick = await open();
+
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  await ask(slow, '@a.txt\n第一条');
+  await ask(slow, '第二条');
+  t.mock.timers.tick(9999);
+  assert.deepEqual(titles(), []);
+  t.mock.timers.tick(1);
+  assert.deepEqual(titles(), ['第一条']);
+  const listed = (await call('session/list', { cwd: root })).sessions;
+  assert.equal(listed.find(session => session.sessionId === slow).title, '第一条');
+  await rename(slow, '扩展标题');
+  assert.deepEqual(titles(), ['第一条', '扩展标题']);
+
+  await ask(quick, '另一条');
+  await rename(quick, '及时命名');
+  t.mock.timers.tick(10000);
+  assert.deepEqual(titles(), ['第一条', '扩展标题', '及时命名']);
 });
 
 test('历史列表、加载回放、恢复、关闭和删除', async t => {
@@ -284,6 +489,24 @@ test('没有可用模型时返回需要认证；扩展未加载时拒绝创建�
   const noExtension = await client(t, { env: { FIXTURE_NO_EXTENSION: '1' } });
   await initialize(noExtension);
   assert.equal((await noExtension.request('session/new', { cwd: root, mcpServers: [] })).error.message, msg('extensionNotReady'));
+});
+
+test('pi 的凭据检查失败返回需要认证，其他错误保持内部错误', async t => {
+  const c = await client(t);
+  await initialize(c);
+  const { sessionId: sid } = await newSession(c);
+  for (const [text, code] of [['no-key', -32000], ['expired', -32000], ['rejected', -32603]]) {
+    assert.equal((await prompt(c, sid, text)).error.code, code, text);
+  }
+  assert.equal((await prompt(c, sid, '继续')).result.stopReason, 'end_turn');
+});
+
+test('凭据错误的匹配与锁定版本 pi 的文案一致', async () => {
+  // rpc-entry 位于 dist/bundle，未打包的同版本源码在 dist/core。
+  const core = new URL('../core/', import.meta.resolve('@earendil-works/pi-coding-agent/rpc-entry'));
+  const { formatNoApiKeyFoundMessage } = await import(new URL('auth-guidance.js', core));
+  assert.match(formatNoApiKeyFoundMessage('test'), AUTH_FAILURE);
+  assert.match(await readFile(new URL('agent-session.js', core), 'utf8'), /`Authentication failed for "\$\{/);
 });
 
 test('会话临时配置在关闭后清理', async t => {
