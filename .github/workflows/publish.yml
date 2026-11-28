@@ -87,3 +87,24 @@ jobs:
             sleep 10
           done
           echo "::warning::npm publish 已成功，但 6 分钟内 registry 仍查不到 $version，请手动核对"
+
+  release:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22.19.0'
+      - name: 生成变更说明并创建 GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node .github/release-notes.js "$GITHUB_REF_NAME" > "$RUNNER_TEMP/release-notes.md"
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/release-notes.md"

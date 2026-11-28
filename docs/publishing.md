@@ -64,6 +64,7 @@ workflow 的触发规则：
 
 - 向 `main` 推送，或创建面向 `main` 的 PR：运行含真实 pi 冒烟测试的测试集，并检查打包文件列表，不发布。
 - 向原仓库推送 `vX.Y.Z` tag：检查通过后发布到 npm `latest`，附带 provenance。
+- npm 发布成功后，`release` job 运行 `.github/release-notes.js` 生成变更说明，并创建同名 GitHub Release；仅该 job 拥有 `contents: write` 权限。
 - 发布 job 额外核对 tag、`package.json`、lockfile 和 Registry 清单版本一致。当前只支持正式版本，预发布版本会被拒绝。
 - 发布成功以 `npm publish` 的退出码为准。registry CDN 会缓存元数据约 300 秒，之后的核对步骤绕过缓存查询新版本，最多等 6 分钟；仍查不到只输出警告，需要手动核对。本地 `npm view` 在发布后几分钟内也可能查不到新版本。
 
@@ -80,6 +81,14 @@ npm view jetbrains-pi-acp dist-tags --json
 ```
 
 推送版本 tag 会真正发布，只有用户已明确授权发布时 Agent 才能执行；仅配置 CI 或准备版本不属于发布授权，已有发布授权时不重复索要确认。发布后向用户报告版本、主要变更和检查结果。`prepublishOnly` 仍会运行 `npm test`，无需在本地执行 `npm login` 或 `npm publish`。
+
+变更说明汇总上一个 `v*` tag（按版本号）到当前 tag 的提交，按破坏性变更、新功能、问题修复、性能优化、其他变更分组，忽略合并提交和 `chore(release)`。发布失败遗留的 tag 同样会作为起点，需要时手动补充 Release 内容。可在本地预览（tag 须已存在）：
+
+```bash
+node .github/release-notes.js "vX.Y.Z"
+```
+
+仅 `release` job 失败时 npm 包已发布，在 Actions 中选择 **Re-run failed jobs**，不要重跑全部 job。
 
 若发布失败，先查看 Actions 日志及 npm 上对应版本是否存在。OIDC 认证失败时核对仓库、workflow 文件名、environment、绑定有效期和 `id-token: write`，不要通过关闭 2FA 或添加绕过 2FA 的 token 解决。超时或结果不明时，确认 registry 状态后再决定是否重试；已发布的版本和 tag 不覆盖、不移动。
 
