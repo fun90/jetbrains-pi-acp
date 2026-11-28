@@ -13,10 +13,11 @@ const failure = error => ({ code: Number.isInteger(error.code) ? error.code : -3
 
 // ACP v1 Agent：处理 JSON-RPC 消息，管理会话生命周期，并代会话向客户端发起授权和表单请求。
 export class Agent {
-  constructor({ send, command, args = [] }) {
+  constructor({ send, command, args = [], loginArgs = [] }) {
     this.send = send;
     this.command = command;
     this.args = args;
+    this.loginArgs = loginArgs;
     this.history = new History(args);
     this.sessions = new Map();
     this.locks = new Map();
@@ -126,8 +127,10 @@ export class Agent {
     if (!Number.isInteger(params.protocolVersion) || params.protocolVersion < 0) throw invalid(t('missingProtocolVersion'));
     this.clientCapabilities = object(params.clientCapabilities) ? params.clientCapabilities : {};
     this.initialized = true;
-    // 终端登录：客户端按原启动配置追加环境变量重新运行适配器，进入 pi 交互界面执行 /login。
-    const terminalAuth = this.clientCapabilities.auth?.terminal === true;
+    // 终端登录：客户端追加环境变量重新运行适配器，进入 pi 交互界面执行 /login。
+    // 声明 auth.terminal 的客户端沿用原启动参数；JetBrains Air 只在 _meta 中声明 terminal-auth，且不带原启动参数。
+    const standardAuth = this.clientCapabilities.auth?.terminal === true;
+    const terminalAuth = standardAuth || this.clientCapabilities._meta?.['terminal-auth'] === true;
     return {
       protocolVersion: 1,
       agentInfo: { name: packageInfo.name, title: 'pi', version: packageInfo.version },
@@ -138,7 +141,8 @@ export class Agent {
         sessionCapabilities: { list: {}, resume: {}, close: {}, delete: {} },
       },
       authMethods: terminalAuth ? [{ id: 'pi-login', type: 'terminal', name: t('loginMethodName'),
-        description: t('loginMethodDescription'), args: [], env: { PI_ACP_SETUP: '1' } }] : [],
+        description: t('loginMethodDescription'), args: standardAuth ? [] : this.loginArgs,
+        env: { PI_ACP_SETUP: '1' } }] : [],
     };
   }
 

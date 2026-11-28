@@ -5,10 +5,11 @@ import { resolvePi } from './pi-command.js';
 import { Agent } from './agent.js';
 import { readJsonl, writeJsonl } from './jsonl.js';
 import { t } from './i18n.js';
+import { airLoginArgs, loginOptions } from './login.js';
 
-const options = process.argv.slice(2);
-let command = process.env.PI_ACP_PI_COMMAND;
 let setup = process.env.PI_ACP_SETUP === '1';
+const options = setup ? loginOptions(process.argv) : process.argv.slice(2);
+let command = process.env.PI_ACP_PI_COMMAND;
 let args = [];
 while (options.length) {
   const option = options.shift();
@@ -31,7 +32,8 @@ if (setup) {
   });
   child.on('exit', (code, signal) => process.exit(code ?? 128 + (constants.signals[signal] ?? 0)));
 } else {
-  const agent = new Agent({ command, args, send: record => writeJsonl(process.stdout, record) });
+  const agent = new Agent({ command, args, loginArgs: airLoginArgs(process.argv, process.env),
+    send: record => writeJsonl(process.stdout, record) });
   readJsonl(process.stdin, record => { void agent.receive(record); }, () => {
     writeJsonl(process.stdout, { jsonrpc: '2.0', id: null, error: { code: -32700, message: t('jsonParseFailed') } });
   });

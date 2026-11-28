@@ -33,6 +33,29 @@ test('终端登录方式只在客户端声明能力时提供，通过环境变�
   await assert.rejects(agent.dispatch('authenticate', { methodId: 'pi-login' }), { code: -32602 });
 });
 
+test('Air 登录终端只带启动命令与登录参数时仍进入登录模式，并保留原启动参数', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'pi-acp-air-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const fixture = join(directory, 'login.mjs');
+  await writeFile(fixture, 'console.log(JSON.stringify(process.argv.slice(2)));');
+  const launch = ['--pi-command', fixture, '--', '参数 含空格'];
+  const request = { jsonrpc: '2.0', id: 1, method: 'initialize',
+    params: { protocolVersion: 1, clientCapabilities: { _meta: { 'terminal-auth': true } } } };
+  for (const [npmCommand, entryArgs] of [['', [entry]], ['exec', ['--yes', `${manifest.name}@${manifest.version}`]]]) {
+    const env = { ...process.env, PI_ACP_SETUP: '', npm_command: npmCommand };
+    const adapter = execute(process.execPath, [entry, ...launch], { env });
+    adapter.child.stdin.end(`${JSON.stringify(request)}\n`);
+    const [method] = JSON.parse((await adapter).stdout).result.authMethods;
+    assert.deepEqual(method.args, [...entryArgs, ...launch]);
+    const options = { env: { ...env, ...method.env } };
+    // command 是 node 时直接运行 args；command 已指向适配器（全局命令、Registry 的 npx 包）时 args 追加在入口之后。
+    const forms = npmCommand ? [[entry, ...method.args]] : [method.args, [entry, ...method.args]];
+    for (const form of forms) {
+      const { stdout } = await execute(process.execPath, form, options);
+      assert.deepEqual(JSON.parse(stdout), ['参数 含空格']);
+    }
+  }
+});
 test('登录模式启动同一个 pi，保留双横线后的参数、交互输入与退出码', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'pi-acp-login-'));
   t.after(() => rm(directory, { recursive: true, force: true }));

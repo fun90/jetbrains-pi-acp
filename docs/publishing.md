@@ -30,7 +30,7 @@ npm install /绝对路径/jetbrains-pi-acp/jetbrains-pi-acp-X.Y.Z.tgz
 
 登录入口透传 pi 的退出码，不独立校验凭据：直接退出 pi 也可能返回成功状态，因此应先完成 `/login`，再退出。当前不自动选择提供商、不发起付费模型调用验证密钥。
 
-默认启动随依赖安装的 pi，不依赖全局 `pi`。如需外部版本，使用 `--pi-command <pi 可执行文件或 .js 入口>` 或 `PI_ACP_PI_COMMAND`；Windows 上使用 `.js` 入口。客户端声明 `auth.terminal: true` 时提供终端认证方式，通过环境变量 `PI_ACP_SETUP=1` 进入登录模式并保留原始启动参数。自定义版本需要自行验证兼容性。
+默认启动随依赖安装的 pi，不依赖全局 `pi`。如需外部版本，使用 `--pi-command <pi 可执行文件或 .js 入口>` 或 `PI_ACP_PI_COMMAND`；Windows 上使用 `.js` 入口。客户端声明 `auth.terminal: true` 或 `_meta["terminal-auth"]`（JetBrains Air）时提供终端认证方式，通过环境变量 `PI_ACP_SETUP=1` 进入登录模式并保留原始启动参数；Air 不带启动参数，由 `src/login.js` 补回。自定义版本需要自行验证兼容性。
 
 ## 一次性配置 Trusted Publishing
 
