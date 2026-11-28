@@ -4,7 +4,8 @@
 
 - 本项目是连接 JetBrains IDE 与 pi coding agent 的 ACP 适配器，使用 JavaScript ESM，要求 Node.js `22.19.0+`，无需构建。
 - `src/` 为适配器，`extensions/acp.ts` 为 pi 扩展，`test/` 和 `fixtures/` 为测试及替身，`registry/jetbrains-pi-acp/agent.json` 为 ACP Registry 清单。
-- 默认用简体中文沟通、写注释及提交信息；英文 README 保持英文，并同步维护中英文使用说明。
+- 与模型沟通一律使用简体中文：回复用户、子代理任务说明、手工验证时发给模型的提示。适配器运行时发给模型的提示属于产品行为，固定使用英文。
+- 注释及提交信息使用简体中文；英文 README 保持英文，并同步维护中英文使用说明。
 - 所有代码（含测试、替身、脚本）须在 Windows、macOS、Linux 上行为一致：路径用 `node:path` 拼接，文本兼容 CRLF，子进程启动复用 `src/pi-command.js` 的解析，测试清理考虑 Windows 文件占用（`EBUSY`）。
 - 修改前阅读相关实现和调用方，复用现有模式，不引入任务不需要的依赖或抽象。
 - 安装依赖用 `npm ci`。普通检查用 `npm test`；涉及 pi 集成或发布时运行 `PI_ACP_SMOKE=1 npm test`，其中 `npm test` 会将项目的 `node_modules/.bin` 加入 PATH，使用锁定的 pi 依赖。
